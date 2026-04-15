@@ -14,13 +14,18 @@ load_dotenv()
 
 # --- DB CONNECTION ---
 def get_data():
+   def get_data():
     try:
-        # Pulls DATABASE_URL from your .env file
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-        query = "SELECT * FROM quant_signals ORDER BY timestamp DESC"
+        # This query only pulls the VERY LATEST scan for each stock
+        query = """
+            SELECT DISTINCT ON (symbol) * FROM quant_signals 
+            ORDER BY symbol, timestamp DESC
+        """
         df = pd.read_sql(query, conn)
         conn.close()
-        return df
+        # Re-sort so the highest scores are at the top
+        return df.sort_values(by="final_score", ascending=False)
     except Exception as e:
         st.error(f"❌ Connection Error: {e}")
         return pd.DataFrame()

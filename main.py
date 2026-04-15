@@ -29,24 +29,35 @@ def get_db_connection():
 
 import feedparser # Add this to requirements.txt
 
+import feedparser
+
 def get_sentiment(ticker):
     try:
-        # Try Yahoo First
+        # Try Yahoo first
         stock = yf.Ticker(ticker)
         news = stock.news
         titles = [n.get('title', '') for n in news[:5]]
         
-        # Fallback: Google News RSS if Yahoo is empty
+        # If Yahoo returns nothing, use Google News RSS
         if not titles:
-            rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+when:1d"
+            # We search for the ticker + "stock" to avoid generic news
+            rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US&gl=US&ceid=US:en"
             feed = feedparser.parse(rss_url)
             titles = [entry.title for entry in feed.entries[:5]]
             
-        if not titles: return 0.0
-        
+        if not titles:
+            return 0.0
+            
         scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
-        return float(np.mean(scores))
-    except:
+        sentiment_avg = float(np.mean(scores))
+        
+        # Log to Railway so you can see it's working
+        if sentiment_avg != 0:
+            print(f"✅ {ticker} Sentiment: {sentiment_avg:.2f}")
+            
+        return sentiment_avg
+    except Exception as e:
+        print(f"Sentiment Error for {ticker}: {e}")
         return 0.0
 
 def check_rs(symbol, sector_etf):
@@ -114,7 +125,7 @@ def run_screener():
             if insider_buy: score += 20
             if short_pct > 10: score += 10
 
-            signal = "💎 CRYSTAL" if score >= 70 else "✅ CONVICTION" if score >= 45 else "ℹ️ NEUTRAL"
+            signal = "💎 CRYSTAL" if score >= 35 else "✅ CONVICTION" if score >= 45 else "ℹ️ NEUTRAL"
 
             results.append({
                 "Ticker": symbol, "Price": price, "Consensus": f"{prev_rating}→{curr_rating}",
