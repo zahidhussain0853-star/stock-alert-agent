@@ -27,15 +27,27 @@ analyzer = SentimentIntensityAnalyzer()
 def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"))
 
-def get_sentiment(ticker_obj):
+import feedparser # Add this to requirements.txt
+
+def get_sentiment(ticker):
     try:
-        news = ticker_obj.news
-        if not news: return 0.0
+        # Try Yahoo First
+        stock = yf.Ticker(ticker)
+        news = stock.news
         titles = [n.get('title', '') for n in news[:5]]
+        
+        # Fallback: Google News RSS if Yahoo is empty
+        if not titles:
+            rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+when:1d"
+            feed = feedparser.parse(rss_url)
+            titles = [entry.title for entry in feed.entries[:5]]
+            
         if not titles: return 0.0
+        
         scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
         return float(np.mean(scores))
-    except: return 0.0
+    except:
+        return 0.0
 
 def check_rs(symbol, sector_etf):
     try:
