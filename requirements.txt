@@ -6,3 +6,4 @@ ta
 feedparser
 psycopg2-binary
 streamlit
+vaderSentiment
