@@ -77,14 +77,21 @@ def save_signals_to_db(cur, results):
         INSERT INTO quant_signals (
             symbol, price, analyst_transition, news_sentiment, 
             rs_status, insider_buying, short_float_pct, 
-            final_score, signal_label
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            final_score, signal_label, volume_delta
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     for res in results:
         cur.execute(query, (
-            str(res['Ticker']), float(res['Price']), str(res['Consensus']),
-            float(res['News']), str(res['RS']), bool(res['Insider'] == "YES"),
-            float(res['Squeeze']), int(res['Score']), str(res['Signal'])
+            str(res['Ticker']), 
+            float(res['Price']), 
+            str(res['Consensus']),
+            float(res['News']), 
+            str(res['RS']), 
+            bool(res['Insider'] == "YES"),
+            float(res['Squeeze']), 
+            int(res['Score']), 
+            str(res['Signal']),
+            float(res['VolDelta']) # The new addition
         ))
 
 def run_screener():

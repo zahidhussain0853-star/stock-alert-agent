@@ -2,126 +2,94 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
-import plotly.express as px
 from dotenv import load_dotenv
 
-# Add this to auto-refresh every 300 seconds
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=300 * 1000, key="datarefresh")
-
-# Load your .env file
 load_dotenv()
 
-# --- DB CONNECTION ---
 def get_data():
-   def get_data():
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-        # This query only pulls the VERY LATEST scan for each stock
+        # Get the latest unique scan for each ticker
         query = """
             SELECT DISTINCT ON (symbol) * FROM quant_signals 
             ORDER BY symbol, timestamp DESC
         """
         df = pd.read_sql(query, conn)
         conn.close()
-        # Re-sort so the highest scores are at the top
         return df.sort_values(by="final_score", ascending=False)
     except Exception as e:
-        st.error(f"❌ Connection Error: {e}")
+        st.error(f"❌ DB Error: {e}")
         return pd.DataFrame()
 
-# --- DASHBOARD UI CONFIG ---
-st.set_page_config(
-    page_title="Quant Signal Command Center",
-    page_icon="📡",
-    layout="wide"
-)
+st.set_page_config(page_title="Quant Pro", layout="wide")
 
-# Custom CSS for a "Trading Terminal" feel
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    div[data-testid="stMetricValue"] { color: #00ffc8; }
-    </style>
-    """, unsafe_allow_html=True)
-
+# Title & Refresh
 st.title("📡 Alpha Intelligence Command Center")
-st.caption("Live Quantitative Analysis of 50 High-Volume Equities")
+if st.button('🔄 Force Refresh Data'):
+    st.rerun()
 
-# --- DATA FETCHING ---
 df = get_data()
 
 if not df.empty:
-    # --- TOP LEVEL METRICS ---
+    # --- METRICS BAR ---
     m1, m2, m3, m4 = st.columns(4)
+    avg_sent = df['news_sentiment'].mean()
     
-    with m1:
-        st.metric("Total Scans", len(df))
-    with m2:
-        crystal_count = len(df[df['signal_label'] == '💎 CRYSTAL'])
-        st.metric("💎 Crystal Buys", crystal_count)
-    with m3:
-        avg_score = round(df['final_score'].mean(), 1)
-        st.metric("Avg Market Score", avg_score)
-    with m4:
-        # Calculate most recent sentiment
-        recent_sent = df['news_sentiment'].iloc[0] if not df.empty else 0
-        st.metric("Latest News Bias", f"{recent_sent:.2f}")
+    m1.metric("Live Coverage", f"{len(df)} Stocks")
+    m2.metric("💎 Crystal Signals", len(df[df['final_score'] >= 70]))
+    m3.metric("Avg Market Score", f"{df['final_score'].mean():.1f}")
+    m4.metric("Market Sentiment", f"{avg_sent:.2f}", delta_color="normal")
 
     st.divider()
 
-    # --- MAIN INTERFACE ---
-    col_left, col_right = st.columns([2, 1])
+    # --- DATAFRAME WITH HIGHLIGHTS ---
+    st.subheader("🎯 High-Conviction Radar")
 
-    with col_left:
-        st.subheader("🎯 Active Trading Signals")
+    # Formatting and Styling
+    def style_dataframe(df):
+        # We create a copy for display
+        styled_df = df[[
+            'symbol', 'price', 'final_score', 'signal_label', 
+            'analyst_transition', 'news_sentiment', 'volume_delta'
+        ]].copy()
         
-        # Filters
-        st.sidebar.header("Filters")
-        search = st.sidebar.text_input("Search Ticker (e.g. NVDA)")
-        min_score = st.sidebar.slider("Min Score", 0, 100, 40)
-        
-        # Filtering Logic
-        display_df = df[df['final_score'] >= min_score]
-        if search:
-            display_df = display_df[display_df['symbol'].str.contains(search.upper())]
+        styled_df.columns = [
+            'Ticker', 'Price', 'Score', 'Signal', 
+            'Rating (Prev→Now)', 'News Score', 'Vol vs Avg'
+        ]
+        return styled_df
 
-        # Display Dataframe
-        st.dataframe(
-            display_df[['timestamp', 'symbol', 'price', 'final_score', 'signal_label', 'rs_status', 'news_sentiment']],
-            use_container_width=True,
-            hide_index=True
-        )
+    clean_df = style_dataframe(df)
 
-    with col_right:
+    # Display with conditional formatting
+    st.dataframe(
+        clean_df.style.background_gradient(cmap='Greens', subset=['Score'])
+        .format({
+            'Price': '${:.2f}',
+            'News Score': '{:.2f}',
+            'Vol vs Avg': '{:.2f}x'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # --- VOLUME ALERT SECTION ---
+    st.divider()
+    vol_col, chart_col = st.columns([1, 2])
+    
+    with vol_col:
+        st.subheader("🔥 Volume Breakouts")
+        # Show stocks where volume is 50% above average
+        breakouts = df[df['volume_delta'] > 1.5][['symbol', 'volume_delta']].sort_values('volume_delta', ascending=False)
+        if not breakouts.empty:
+            st.table(breakouts)
+        else:
+            st.write("No unusual volume detected yet.")
+
+    with chart_col:
         st.subheader("📈 Score Distribution")
-        fig = px.pie(df, names='signal_label', hole=0.4, 
-                     color_discrete_sequence=px.colors.qualitative.Pastel)
-        fig.update_layout(showlegend=False, height=300, margin=dict(t=0, b=0, l=0, r=0))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.subheader("🔥 Top 5 Heat")
-        top_5 = df.nlargest(5, 'final_score')[['symbol', 'final_score', 'price']]
-        st.table(top_5)
-
-    # --- DETAILED ANALYSIS SECTION ---
-    st.divider()
-    st.header("🔍 Signal Deep Dive")
-    
-    selected_ticker = st.selectbox("Select a ticker for historical context:", df['symbol'].unique())
-    ticker_history = df[df['symbol'] == selected_ticker]
-    
-    hist_col1, hist_col2 = st.columns(2)
-    with hist_col1:
-        st.line_chart(ticker_history.set_index('timestamp')['final_score'])
-        st.caption(f"Score History for {selected_ticker}")
-    with hist_col2:
-        st.bar_chart(ticker_history.set_index('timestamp')['news_sentiment'])
-        st.caption(f"Sentiment History for {selected_ticker}")
+        st.bar_chart(df.set_index('symbol')['final_score'].head(15))
+        st.caption("Top 15 Tickers by Quant Score")
 
 else:
-    st.warning("The database appears to be empty. Run your `main.py` first to populate signals.")
-
-# Footer
-st.markdown("---")
-st.markdown("🔒 *AI Quant Agent v1.0 - Private Deployment*")
+    st.info("Waiting for agent to finish the first clean scan...")
