@@ -31,17 +31,16 @@ import feedparser # Add this to requirements.txt
 
 import feedparser
 
-def get_sentiment(ticker):
+def get_sentiment(ticker_symbol, ticker_obj):
     try:
-        # Try Yahoo first
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        titles = [n.get('title', '') for n in news[:5]]
+        # 1. Try Yahoo First (using the object)
+        news = ticker_obj.news
+        titles = [n.get('title', '') for n in news[:5]] if news else []
         
-        # If Yahoo returns nothing, use Google News RSS
+        # 2. Fallback: Google News RSS (using the string)
         if not titles:
-            # We search for the ticker + "stock" to avoid generic news
-            rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US&gl=US&ceid=US:en"
+            # FIX: We use ticker_symbol here, not ticker_obj
+            rss_url = f"https://news.google.com/rss/search?q={ticker_symbol}+stock+news&hl=en-US&gl=US&ceid=US:en"
             feed = feedparser.parse(rss_url)
             titles = [entry.title for entry in feed.entries[:5]]
             
@@ -51,13 +50,13 @@ def get_sentiment(ticker):
         scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
         sentiment_avg = float(np.mean(scores))
         
-        # Log to Railway so you can see it's working
+        # Log success to Railway
         if sentiment_avg != 0:
-            print(f"✅ {ticker} Sentiment: {sentiment_avg:.2f}")
+            print(f"✅ {ticker_symbol} Sentiment Score: {sentiment_avg:.2f}")
             
         return sentiment_avg
     except Exception as e:
-        print(f"Sentiment Error for {ticker}: {e}")
+        print(f"Sentiment Error for {ticker_symbol}: {e}")
         return 0.0
 
 def check_rs(symbol, sector_etf):
@@ -106,7 +105,7 @@ def run_screener():
             prev_rating = get_last_rating(cur, symbol)
             
             # 2. Contextual Data
-            sentiment = get_sentiment(stock)
+            sentiment = get_sentiment(symbol, stock)
             is_leader = check_rs(symbol, sector_etf)
             short_pct = (info.get("shortPercentOfFloat", 0) * 100) if info.get("shortPercentOfFloat") else 0.0
             
