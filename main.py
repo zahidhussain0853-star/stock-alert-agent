@@ -62,16 +62,17 @@ def save_to_db(results):
         """
 
         for res in results:
+            # FIX: Convert all NumPy types to standard Python types (float/int)
             data = (
-                res['Ticker'],
-                res['Price'],
-                res['Consensus'],
-                res['News'],
-                res['RS'],
-                res['Insider'] == "YES",
-                float(res['Squeeze'].replace('%', '')),
-                res['Score'],
-                res['Signal']
+                str(res['Ticker']),
+                float(res['Price']),           # Convert to Python float
+                str(res['Consensus']),
+                float(res['News']),            # Convert to Python float
+                str(res['RS']),
+                bool(res['Insider'] == "YES"),
+                float(str(res['Squeeze']).replace('%', '')), # Clean and convert
+                int(res['Score']),             # Convert to Python int
+                str(res['Signal'])
             )
             cur.execute(query, data)
         
