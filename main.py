@@ -3,15 +3,12 @@ import pandas as pd
 import requests
 import time
 import os
-import feedparser
-import psycopg2
 from dotenv import load_dotenv
 from ta.momentum import RSIIndicator
-
-#print("🚀 NEW DEPLOY TEST")
+import psycopg2
 
 # ==============================
-# 🔐 LOAD ENV VARIABLES
+# 🔐 LOAD ENV
 # ==============================
 load_dotenv()
 
@@ -19,133 +16,52 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-#print("DB URL:", DATABASE_URL)
-
 # ==============================
-# 🗄️ DATABASE CONNECTION
-# ==============================
-conn = psycopg2.connect(DATABASE_URL)
-cursor = conn.cursor()
-
-# Create table if not exists
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS trades (
-    id SERIAL PRIMARY KEY,
-    timestamp TIMESTAMP,
-    symbol TEXT,
-    change FLOAT,
-    rsi FLOAT,
-    entry_price FLOAT,
-    future_price FLOAT,
-    return_pct FLOAT
-)
-""")
-conn.commit()
-
-
-# ==============================
-# 📩 TELEGRAM FUNCTION
+# 📲 TELEGRAM
 # ==============================
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-    response = requests.post(url, data=data)
-    print("Telegram:", response.text)
-
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": message}
+        requests.post(url, data=data)
+    except Exception as e:
+        print("Telegram error:", e)
 
 # ==============================
-# 🧠 NEWS FILTER
+# 🗄️ DATABASE
 # ==============================
-def has_bad_news(symbol):
-    url = f"https://news.google.com/rss/search?q={symbol}+stock"
-    feed = feedparser.parse(url)
+def get_connection():
+    return psycopg2.connect(DATABASE_URL)
 
-    bad_keywords = [
-        "earnings miss", "downgrade", "lawsuit", "fraud",
-        "investigation", "guidance cut", "bankruptcy",
-        "layoffs", "missed expectations", "revenue miss"
-    ]
+def log_trade(symbol, change, rsi, price):
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
 
-    for entry in feed.entries[:5]:
-        title = entry.title.lower()
+        cur.execute("""
+            INSERT INTO trades (symbol, change_pct, rsi, price)
+            VALUES (%s, %s, %s, %s)
+        """, (symbol, change, rsi, price))
 
-        for word in bad_keywords:
-            if word in title:
-                print(f"⚠️ Bad news detected for {symbol}: {title}")
-                return True
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    return False
+        print(f"Logged trade: {symbol}")
 
+    except Exception as e:
+        print("DB error:", e)
 
 # ==============================
-# 📈 STOCK LIST
+# 📊 STOCK LIST
 # ==============================
 stocks = [
     "AAPL","MSFT","NVDA","AMZN","META",
-    "GOOGL","TSLA","AMD","NFLX","INTC",
-    "CRM","ADBE","PYPL","CSCO","ORCL",
-    "PEP","KO","MCD","NKE","SBUX",
-    "JPM","BAC","WFC","GS","MS",
-    "XOM","CVX","COP","SLB","BP",
-    "BA","CAT","GE","MMM","HON",
-    "UNH","JNJ","PFE","MRK","ABBV",
-    "HD","LOW","COST","WMT","TGT"
+    "GOOGL","TSLA","AMD","NFLX","INTC"
 ]
 
-
 # ==============================
-# 📝 LOG TRADE TO DATABASE
-# ==============================
-def log_trade(symbol, change, rsi, price):
-    cursor.execute("""
-        INSERT INTO trades (timestamp, symbol, change, rsi, entry_price)
-        VALUES (NOW(), %s, %s, %s, %s)
-    """, (symbol, change, rsi, price))
-    conn.commit()
-
-
-# ==============================
-# 📊 UPDATE PERFORMANCE
-# ==============================
-def update_performance():
-    cursor.execute("""
-        SELECT id, symbol, entry_price
-        FROM trades
-        WHERE future_price IS NULL
-    """)
-
-    rows = cursor.fetchall()
-
-    for row in rows:
-        trade_id, symbol, entry_price = row
-
-        try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period="1d")
-
-            if len(data) == 0:
-                continue
-
-            current_price = data["Close"].iloc[-1]
-            return_pct = ((current_price - entry_price) / entry_price) * 100
-
-            cursor.execute("""
-                UPDATE trades
-                SET future_price = %s,
-                    return_pct = %s
-                WHERE id = %s
-            """, (current_price, return_pct, trade_id))
-
-            conn.commit()
-
-        except Exception as e:
-            print(f"Error updating {symbol}:", e)
-
-# ==============================
-#  DATA FETCH RETRY
+# 🔁 RETRY LOGIC
 # ==============================
 def get_spy_data(retries=3):
     for i in range(retries):
@@ -164,107 +80,85 @@ def get_spy_data(retries=3):
     return None
 
 # ==============================
-# 🚀 MAIN AGENT
+# 🤖 AGENT
 # ==============================
 def run_agent():
     print("\n🚀 Running stock scan...")
 
-    # Market check
-    try:
+    # --- Market check ---
     spy_data = get_spy_data()
 
-if spy_data is None:
-    print("Skipping run due to SPY failure")
-    return
-
-    if len(spy_data) < 2:
-        print("Not enough SPY data")
+    if spy_data is None:
+        print("Skipping run due to SPY failure")
         return
-
-except Exception as e:
-    print("Error fetching SPY:", e)
-    return
 
     spy_latest = spy_data["Close"].iloc[-1]
     spy_previous = spy_data["Close"].iloc[-2]
-
     spy_change = ((spy_latest - spy_previous) / spy_previous) * 100
+
     print(f"SPY Change: {spy_change:.2f}%")
 
     if spy_change > -1:
         print("Market not down enough.")
+
+        # 🔥 TEST TRADE (so dashboard fills)
+        log_trade("TEST", -1.5, 25, 100)
         return
 
     print("Market DOWN → scanning stocks...\n")
 
-    data = yf.download(stocks, period="1mo", group_by="ticker", progress=False)
+    # --- Download data ---
+    try:
+        data = yf.download(stocks, period="1mo", group_by="ticker", progress=False)
+    except Exception as e:
+        print("Stock download error:", e)
+        return
 
     candidates = []
 
-    for symbol in stocks:
+    for stock in stocks:
         try:
-            df = data[symbol]
+            df = data[stock].dropna()
 
-            if len(df) < 14:
+            if len(df) < 15:
                 continue
 
-            rsi_indicator = RSIIndicator(close=df["Close"])
-            df["RSI"] = rsi_indicator.rsi()
+            change = ((df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2]) * 100
 
-            latest = df.iloc[-1]
-            previous = df.iloc[-2]
+            rsi = RSIIndicator(df["Close"]).rsi().iloc[-1]
+            price = df["Close"].iloc[-1]
 
-            change = ((latest["Close"] - previous["Close"]) / previous["Close"]) * 100
-            rsi = latest["RSI"]
+            print(f"{stock}: Change={change:.2f}% | RSI={rsi:.2f}")
 
-            print(f"{symbol}: {change:.2f}% | RSI {rsi:.2f}")
-
-            if change < -3 and rsi < 30:
-
-                if has_bad_news(symbol):
-                    print(f"Skipping {symbol} due to bad news")
-                    continue
-
-                score = abs(change) + (30 - rsi)
-                candidates.append((symbol, change, rsi, score, latest["Close"]))
+            # 🔥 RELAXED CONDITION (for testing)
+            if change < -1:
+                candidates.append((stock, change, rsi, price))
 
         except Exception as e:
-            print(f"Error with {symbol}: {e}")
-            continue
+            print(f"{stock} error:", e)
 
-    candidates.sort(key=lambda x: x[3], reverse=True)
-
+    # --- Results ---
     print("\n--- TOP BUY CANDIDATES ---")
 
     if not candidates:
         print("No strong opportunities found.")
 
-        # 🔥 TEST TRADE (force insert)
-        print("⚠️ Inserting test trade...")
-        log_trade("TEST", -1.5, 25, 100)
-    else:
-        for stock in candidates:
-            symbol, change, rsi, score, price = stock
+        # 🔥 TEST TRADE fallback
+        log_trade("TEST", -1.2, 30, 100)
+        return
 
-            message = (
-                f"🚀 BUY ALERT\n"
-                f"{symbol}\n"
-                f"Drop: {change:.2f}%\n"
-                f"RSI: {rsi:.2f}"
-            )
+    for stock, change, rsi, price in candidates:
+        message = f"📉 BUY SIGNAL\n{stock}\nDrop: {change:.2f}%\nRSI: {rsi:.2f}\nPrice: {price:.2f}"
 
-            print(message)
-            send_telegram(message)
-            log_trade(symbol, change, rsi, price)
-
+        send_telegram(message)
+        log_trade(stock, change, rsi, price)
 
 # ==============================
-# 🔁 LOOP
+# 🔄 LOOP
 # ==============================
 while True:
     try:
         run_agent()
-        update_performance()
     except Exception as e:
         print("Agent error:", e)
 
