@@ -8,6 +8,8 @@ import psycopg2
 from dotenv import load_dotenv
 from ta.momentum import RSIIndicator
 
+print("🚀 NEW DEPLOY TEST")
+
 # ==============================
 # 🔐 LOAD ENV VARIABLES
 # ==============================
@@ -16,6 +18,8 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+print("DB URL:", DATABASE_URL)
 
 # ==============================
 # 🗄️ DATABASE CONNECTION
