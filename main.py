@@ -208,6 +208,10 @@ def run_agent():
 
     if not candidates:
         print("No strong opportunities found.")
+
+        # 🔥 TEST TRADE (force insert)
+        print("⚠️ Inserting test trade...")
+        log_trade("TEST", -1.5, 25, 100)
     else:
         for stock in candidates:
             symbol, change, rsi, score, price = stock
