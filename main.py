@@ -34,10 +34,26 @@ def get_db_connection():
 def get_sentiment(ticker_obj):
     try:
         news = ticker_obj.news
-        if not news: return 0
-        scores = [analyzer.polarity_scores(n.get('title', ''))['compound'] for n in news[:5]]
-        return np.mean(scores) if scores else 0
-    except: return 0
+        if not news or len(news) == 0:
+            return 0
+        
+        titles = []
+        for n in news[:5]:
+            title = n.get('title', '')
+            if title:
+                titles.append(title)
+        
+        if not titles:
+            return 0
+            
+        # Log to Railway so you can see it's working
+        print(f"Analyzing: {titles[0][:30]}...") 
+        
+        scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
+        return float(np.mean(scores)) # Ensure it's a standard float
+    except Exception as e:
+        print(f"Sentiment Error: {e}")
+        return 0
 
 def check_rs(symbol, sector_etf):
     try:
