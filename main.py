@@ -137,7 +137,7 @@ def run_screener():
                 "Ticker": symbol, "Price": price, "Consensus": f"{prev_rating}→{curr_rating}",
                 "News": sentiment, "RS": "Leader" if is_leader else "Lag",
                 "Insider": "YES" if insider_buy else "No", "Squeeze": short_pct,
-                "Score": score, "Signal": signal
+                "Score": score, "Signal": signal, "VolDelta": vol_delta
             })
 
             # Update the rating memory for the next run
