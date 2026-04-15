@@ -4,6 +4,7 @@ import numpy as np
 import os
 import psycopg2
 import feedparser
+import requests
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 
@@ -28,19 +29,35 @@ def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 def get_sentiment(ticker_symbol, ticker_obj):
+    titles = []
     try:
+        # 1. Try Yahoo (using the object)
         news = ticker_obj.news
-        titles = [n.get('title', '') for n in news[:5]] if news else []
+        if news:
+            titles = [n.get('title', '') for n in news[:5]]
         
+        # 2. Stronger Fallback: Google News with User-Agent
         if not titles:
             rss_url = f"https://news.google.com/rss/search?q={ticker_symbol}+stock+news&hl=en-US&gl=US&ceid=US:en"
-            feed = feedparser.parse(rss_url)
+            # We add a User-Agent to look like a real browser
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            response = requests.get(rss_url, headers=headers, timeout=10)
+            feed = feedparser.parse(response.content)
             titles = [entry.title for entry in feed.entries[:5]]
             
-        if not titles: return 0.0
+        if not titles:
+            return 0.0
+            
         scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
-        return float(np.mean(scores))
-    except:
+        sentiment_avg = float(np.mean(scores))
+        
+        # Railway Log check
+        if sentiment_avg != 0:
+            print(f"✅ {ticker_symbol} Sentiment: {sentiment_avg:.2f}")
+            
+        return sentiment_avg
+    except Exception as e:
+        print(f"Sentiment Error for {ticker_symbol}: {e}")
         return 0.0
 
 def check_rs(symbol, sector_etf):
