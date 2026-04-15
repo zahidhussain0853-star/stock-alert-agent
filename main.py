@@ -39,7 +39,7 @@ def log_trade(symbol, change, rsi, price):
         cur = conn.cursor()
 
         cur.execute("""
-            INSERT INTO trades (symbol, change_pct, rsi, price)
+            INSERT INTO trades (symbol, change, rsi, entry_price)
             VALUES (%s, %s, %s, %s)
         """, (symbol, change, rsi, price))
 
