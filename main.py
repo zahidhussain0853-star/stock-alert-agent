@@ -3,10 +3,12 @@ import pandas as pd
 import numpy as np
 import os
 import psycopg2
+import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 
 load_dotenv()
+analyzer = SentimentIntensityAnalyzer()
 
 # --- CONFIGURATION ---
 TICKERS_MAPPING = {
@@ -22,41 +24,23 @@ TICKERS_MAPPING = {
     "HON": "XLI", "BA": "XLI", "WMT": "XLP", "COST": "XLP", "LIN": "XLB"
 }
 
-analyzer = SentimentIntensityAnalyzer()
-
 def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"))
 
-import feedparser # Add this to requirements.txt
-
-import feedparser
-
 def get_sentiment(ticker_symbol, ticker_obj):
     try:
-        # 1. Try Yahoo First (using the object)
         news = ticker_obj.news
         titles = [n.get('title', '') for n in news[:5]] if news else []
         
-        # 2. Fallback: Google News RSS (using the string)
         if not titles:
-            # FIX: We use ticker_symbol here, not ticker_obj
             rss_url = f"https://news.google.com/rss/search?q={ticker_symbol}+stock+news&hl=en-US&gl=US&ceid=US:en"
             feed = feedparser.parse(rss_url)
             titles = [entry.title for entry in feed.entries[:5]]
             
-        if not titles:
-            return 0.0
-            
+        if not titles: return 0.0
         scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
-        sentiment_avg = float(np.mean(scores))
-        
-        # Log success to Railway
-        if sentiment_avg != 0:
-            print(f"✅ {ticker_symbol} Sentiment Score: {sentiment_avg:.2f}")
-            
-        return sentiment_avg
-    except Exception as e:
-        print(f"Sentiment Error for {ticker_symbol}: {e}")
+        return float(np.mean(scores))
+    except:
         return 0.0
 
 def check_rs(symbol, sector_etf):
@@ -65,12 +49,16 @@ def check_rs(symbol, sector_etf):
         if data.empty or len(data) < 10: return False
         returns = data.pct_change(9).iloc[-1]
         return bool(returns[symbol] > returns[sector_etf])
-    except: return False
+    except:
+        return False
 
 def get_last_rating(cur, symbol):
-    cur.execute("SELECT last_rating FROM analyst_ratings WHERE symbol = %s", (symbol,))
-    row = cur.fetchone()
-    return float(row[0]) if row else 3.0
+    try:
+        cur.execute("SELECT last_rating FROM analyst_ratings WHERE symbol = %s", (symbol,))
+        row = cur.fetchone()
+        return float(row[0]) if row else 3.0
+    except:
+        return 3.0
 
 def save_signals_to_db(cur, results):
     query = """
@@ -82,16 +70,9 @@ def save_signals_to_db(cur, results):
     """
     for res in results:
         cur.execute(query, (
-            str(res['Ticker']), 
-            float(res['Price']), 
-            str(res['Consensus']),
-            float(res['News']), 
-            str(res['RS']), 
-            bool(res['Insider'] == "YES"),
-            float(res['Squeeze']), 
-            int(res['Score']), 
-            str(res['Signal']),
-            float(res['VolDelta']) # The new addition
+            str(res['Ticker']), float(res['Price']), str(res['Consensus']),
+            float(res['News']), str(res['RS']), False, 0.0,
+            int(res['Score']), str(res['Signal']), float(res['VolDelta'])
         ))
 
 def run_screener():
@@ -102,52 +83,46 @@ def run_screener():
     print("🚀 Starting Production Scan...")
 
     for symbol, sector_etf in TICKERS_MAPPING.items():
+        # Initialize defaults to prevent Scoping Errors
+        price, curr_rating, vol_delta, sentiment, is_leader = 0.0, 3.0, 1.0, 0.0, False
+        
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # 1. Price & Ratings
             price = info.get('regularMarketPrice') or info.get('currentPrice') or 0.0
             curr_rating = info.get("recommendationMean", 3.0)
-            prev_rating = get_last_rating(cur, symbol)
-            
-            # 2. Contextual Data
+            avg_vol = info.get("averageVolume10days") or info.get("averageVolume") or 1.0
+            curr_vol = info.get("regularMarketVolume") or 0.0
+            vol_delta = float(curr_vol / avg_vol) if avg_vol > 0 else 1.0
+
             sentiment = get_sentiment(symbol, stock)
             is_leader = check_rs(symbol, sector_etf)
-            short_pct = (info.get("shortPercentOfFloat", 0) * 100) if info.get("shortPercentOfFloat") else 0.0
+            prev_rating = get_last_rating(cur, symbol)
             
-            # 3. Insider Check
-            try:
-                insider = stock.insider_transactions
-                insider_buy = any("Purchase" in str(x) for x in insider['Transaction'].head(5)) if insider is not None and not insider.empty else False
-            except: insider_buy = False
-
-            # 4. Scoring Logic
+            # Scoring logic
             score = 0
-            # +30 for Upgrade (Current rating is lower/better than previous)
             if curr_rating < prev_rating: score += 30
-            if sentiment > 0.1: score += 20
+            if sentiment > 0.15: score += 20
             if is_leader: score += 20
-            if insider_buy: score += 20
-            if short_pct > 10: score += 10
+            if vol_delta > 1.5: score += 10
 
-            signal = "💎 CRYSTAL" if score >= 35 else "✅ CONVICTION" if score >= 45 else "ℹ️ NEUTRAL"
+            signal = "💎 CRYSTAL" if score >= 70 else "✅ CONVICTION" if score >= 45 else "ℹ️ NEUTRAL"
 
             results.append({
-                "Ticker": symbol, "Price": price, "Consensus": f"{prev_rating}→{curr_rating}",
+                "Ticker": symbol, "Price": price, 
+                "Consensus": f"{prev_rating:.1f} → {curr_rating:.1f}",
                 "News": sentiment, "RS": "Leader" if is_leader else "Lag",
-                "Insider": "YES" if insider_buy else "No", "Squeeze": short_pct,
                 "Score": score, "Signal": signal, "VolDelta": vol_delta
             })
 
-            # Update the rating memory for the next run
             cur.execute("""
-                INSERT INTO analyst_ratings (symbol, last_rating, updated_at)
-                VALUES (%s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (symbol) DO UPDATE SET last_rating = EXCLUDED.last_rating, updated_at = CURRENT_TIMESTAMP
+                INSERT INTO analyst_ratings (symbol, last_rating) 
+                VALUES (%s, %s) 
+                ON CONFLICT (symbol) DO UPDATE SET last_rating = EXCLUDED.last_rating
             """, (symbol, curr_rating))
             
-            print(f"Processed {symbol} | Score: {score}")
+            print(f"Processed {symbol} | Score: {score} | Vol: {vol_delta:.2f}x")
 
         except Exception as e:
             print(f"Error skipping {symbol}: {e}")
@@ -155,7 +130,7 @@ def run_screener():
     if results:
         save_signals_to_db(cur, results)
         conn.commit()
-        print(f"✅ Archived {len(results)} signals to PostgreSQL.")
+        print(f"✅ Successfully archived {len(results)} signals to PostgreSQL.")
 
     cur.close()
     conn.close()
