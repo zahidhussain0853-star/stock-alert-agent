@@ -144,6 +144,24 @@ def update_performance():
         except Exception as e:
             print(f"Error updating {symbol}:", e)
 
+# ==============================
+#  DATA FETCH RETRY
+# ==============================
+def get_spy_data(retries=3):
+    for i in range(retries):
+        try:
+            spy = yf.Ticker("SPY")
+            data = spy.history(period="2d")
+
+            if len(data) >= 2:
+                return data
+
+        except Exception as e:
+            print(f"SPY fetch failed (attempt {i+1}):", e)
+
+        time.sleep(2)
+
+    return None
 
 # ==============================
 # 🚀 MAIN AGENT
@@ -152,8 +170,20 @@ def run_agent():
     print("\n🚀 Running stock scan...")
 
     # Market check
-    spy = yf.Ticker("SPY")
-    spy_data = spy.history(period="2d")
+    try:
+    spy_data = get_spy_data()
+
+if spy_data is None:
+    print("Skipping run due to SPY failure")
+    return
+
+    if len(spy_data) < 2:
+        print("Not enough SPY data")
+        return
+
+except Exception as e:
+    print("Error fetching SPY:", e)
+    return
 
     spy_latest = spy_data["Close"].iloc[-1]
     spy_previous = spy_data["Close"].iloc[-2]
@@ -232,7 +262,11 @@ def run_agent():
 # 🔁 LOOP
 # ==============================
 while True:
-    run_agent()
-    update_performance()
+    try:
+        run_agent()
+        update_performance()
+    except Exception as e:
+        print("Agent error:", e)
+
     print("\n⏱️ Sleeping for 10 minutes...\n")
     time.sleep(600)
