@@ -101,8 +101,6 @@ def run_agent():
     if spy_change > -1:
         print("Market not down enough.")
 
-        # 🔥 TEST TRADE (so dashboard fills)
-        log_trade("TEST", -1.5, 25, 100)
         return
 
     print("Market DOWN → scanning stocks...\n")
