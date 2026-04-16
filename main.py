@@ -72,10 +72,10 @@ def run_scanner():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # 1. Ensure table exists
+    # 1. Ensure Table and Unique Constraint (Crucial for fixing the 1011 row issue)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quant_signals (
-            symbol TEXT,
+            symbol TEXT PRIMARY KEY,
             price FLOAT,
             final_score FLOAT,
             signal_label TEXT,
@@ -85,28 +85,12 @@ def run_scanner():
             insider_buying BOOLEAN,
             short_float_pct FLOAT,
             rs_status TEXT,
+            num_analysts INT,
+            raw_rating FLOAT,
+            prev_raw_rating FLOAT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
-    # 2. SELF-HEALING: Add new columns if missing
-    columns_to_add = {
-        "num_analysts": "INT",
-        "raw_rating": "FLOAT",
-        "prev_raw_rating": "FLOAT" # <--- ADDED THIS NEW COLUMN
-    }
-    
-    for col, col_type in columns_to_add.items():
-        cur.execute(f"""
-            DO $$ 
-            BEGIN 
-                BEGIN
-                    ALTER TABLE quant_signals ADD COLUMN {col} {col_type};
-                EXCEPTION
-                    WHEN duplicate_column THEN RAISE NOTICE 'column {col} already exists';
-                END;
-            END $$;
-        """)
     conn.commit()
 
     print(f"🚀 Starting Scan at {datetime.now()}")
@@ -116,69 +100,75 @@ def run_scanner():
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # 1. Price & Volume
+            # --- 1. DATA GATHERING ---
             price = info.get('currentPrice', 0)
             avg_vol = info.get('averageVolume', 1)
             curr_vol = info.get('regularMarketVolume', 0)
             vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
             
-            # --- 2. ANALYST MEMORY LOGIC ---
             raw_curr = info.get('recommendationMean')
             num_analysts = info.get('numberOfAnalystOpinions', 0)
+            curr_rating = float(raw_curr) if raw_curr is not None else 3.0
             
-            if raw_curr is not None:
-                curr_rating = float(raw_curr)
-            else:
-                curr_rating = 3.0
-                print(f"⚠️ {symbol}: No rating found, defaulting to 3.0")
-            
-            # FETCH PREVIOUS RATING
-            cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1", (symbol,))
+            # --- 2. ANALYST MEMORY LOGIC ---
+            cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s", (symbol,))
             prev_row = cur.fetchone()
+            prev_rating = float(prev_row[0]) if prev_row and prev_row[0] is not NULL else curr_rating 
             
-            if prev_row and prev_row[0] is not None:
-                prev_rating = float(prev_row[0])
-            else:
-                prev_rating = curr_rating  
+            # --- 3. SCORING ALGORITHM (Stepwise Refined) ---
+            score = 0
             
-            transition_bonus = 30 if curr_rating < prev_rating else 0
-            transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
+            # THE FLOOR: Give points based on rating (1.0 is best, 5.0 is worst)
+            # Math: (5.0 - 2.5 Buy Rating) * 10 = 25 base points.
+            base_score = (5.0 - curr_rating) * 10
+            score += base_score
 
-            # 3. Sentiment & RS
-            sentiment = get_sentiment(symbol)
-            rs_status = get_relative_strength(symbol)
+            # THE BOOSTS
+            if curr_rating < prev_rating: score += 20  # Analyst Upgrade
+            if get_sentiment(symbol) > 0.1: score += 20
+            if vol_delta > 1.5: score += 10
+            if get_relative_strength(symbol) == "Leader": score += 20
             
-            # 4. Squeeze & Insider
+            # Insider/Short logic
             short_pct = info.get('shortPercentOfFloat', 0) * 100
+            if short_pct > 10: score += 10
             
             insider_data = stock.insider_transactions
             insider_buy = False
             if insider_data is not None and not insider_data.empty:
                 insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
-
-            # --- SCORING ALGORITHM ---
-            score = 0
-            score += transition_bonus
-            if sentiment > 0.1: score += 20
-            if vol_delta > 1.5: score += 10
-            if rs_status == "Leader": score += 20
             if insider_buy: score += 10
-            if short_pct > 10: score += 10
-            
+
+            score = min(round(score, 0), 100)
             label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
 
-            # 5. Save to DB (Now includes prev_raw_rating)
+            # --- 4. UPSERT LOGIC (The "Fix" for 1011 rows) ---
             cur.execute("""
                 INSERT INTO quant_signals 
                 (symbol, price, final_score, signal_label, analyst_transition, 
                  news_sentiment, volume_delta, insider_buying, short_float_pct, 
-                 rs_status, num_analysts, raw_rating, prev_raw_rating)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (symbol, price, score, label, transition_text, sentiment, 
-                  vol_delta, insider_buy, short_pct, rs_status, num_analysts, curr_rating, prev_rating))
+                 rs_status, num_analysts, raw_rating, prev_raw_rating, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (symbol) DO UPDATE SET
+                    price = EXCLUDED.price,
+                    final_score = EXCLUDED.final_score,
+                    signal_label = EXCLUDED.signal_label,
+                    analyst_transition = EXCLUDED.analyst_transition,
+                    news_sentiment = EXCLUDED.news_sentiment,
+                    volume_delta = EXCLUDED.volume_delta,
+                    insider_buying = EXCLUDED.insider_buying,
+                    short_float_pct = EXCLUDED.short_float_pct,
+                    rs_status = EXCLUDED.rs_status,
+                    num_analysts = EXCLUDED.num_analysts,
+                    raw_rating = EXCLUDED.raw_rating,
+                    prev_raw_rating = EXCLUDED.prev_raw_rating,
+                    timestamp = CURRENT_TIMESTAMP;
+            """, (symbol, price, score, label, f"{prev_rating:.1f} → {curr_rating:.1f}", 
+                  get_sentiment(symbol), vol_delta, insider_buy, short_pct, 
+                  get_relative_strength(symbol), num_analysts, curr_rating, prev_rating))
             
             conn.commit()
-            print(f"✅ {symbol} processed | Score: {score}")
+            print(f"✅ {symbol} | Final Score: {score}")
 
         except Exception as e:
             print(f"❌ Error scanning {symbol}: {e}")
