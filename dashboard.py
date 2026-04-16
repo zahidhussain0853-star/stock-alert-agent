@@ -2,20 +2,26 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
+import warnings
 from dotenv import load_dotenv
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Alpha Intelligence Command Center", layout="wide")
 load_dotenv()
 
+# Suppress the SQLAlchemy warning from Pandas (Corrected function name)
+warnings.filterwarnings("ignore", category=UserWarning)
+
 # --- DATABASE CONNECTION ---
 def get_data():
     conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    # Ensure num_analysts and raw_rating are included in the SELECT
     query = """
     SELECT DISTINCT ON (symbol) 
         symbol, price, final_score, signal_label, 
         analyst_transition, news_sentiment, volume_delta,
-        insider_buying, short_float_pct, rs_status, timestamp
+        insider_buying, short_float_pct, rs_status, 
+        num_analysts, raw_rating, timestamp
     FROM quant_signals
     ORDER BY symbol, timestamp DESC;
     """
@@ -35,34 +41,61 @@ def translate_rating(val):
     except:
         return "N/A"
 
-def format_transition(transition_str):
+# --- DETAILED RATING FORMATTER ---
+def format_detailed_rating(row):
+    """Handles arrow character mismatch and adds (Count, Avg)"""
     try:
-        parts = transition_str.split(" → ")
-        prev = translate_rating(parts[0])
-        now = translate_rating(parts[1])
+        raw_text = str(row['analyst_transition'])
+        
+        # Split by EITHER the special arrow or the hyphen arrow
+        if " → " in raw_text:
+            parts = raw_text.split(" → ")
+        elif " -> " in raw_text:
+            parts = raw_text.split(" -> ")
+        else:
+            return raw_text # Fallback if no arrow found
+
+        # Translate the numbers into text labels
+        prev = translate_rating(parts[0].strip())
+        now = translate_rating(parts[1].strip())
+        
+        # Get the extra numeric data
+        count = row.get('num_analysts')
+        avg = row.get('raw_rating')
+        
+        # If we have valid numeric data, append the brackets
+        if count is not None and not pd.isna(count) and avg is not None:
+            return f"{prev} → {now} ({int(count)}, {float(avg):.1f})"
+        
+        # If no numeric data, just return labels
         return f"{prev} → {now}"
-    except:
-        return transition_str
+    except Exception:
+        return str(row['analyst_transition'])
 
 # --- STYLING FUNCTION ---
 def style_dataframe(df):
+    # Select columns for display
     styled_df = df[[
         'symbol', 'price', 'final_score', 'signal_label', 
         'analyst_transition', 'news_sentiment', 'volume_delta',
         'insider_buying', 'short_float_pct', 'rs_status'
     ]].copy()
     
-    # Apply the translation to the Analyst column
-    styled_df['analyst_transition'] = styled_df['analyst_transition'].apply(format_transition)
+    # Apply the detailed formatting logic (uses data from the original df)
+    styled_df['analyst_transition'] = df.apply(format_detailed_rating, axis=1)
     
+    # Rename columns for the UI
     styled_df.columns = [
         'Ticker', 'Price', 'Score', 'Signal', 
         'Rating (Prev→Now)', 'News', 'Vol Shift',
         'Insider', 'Short %', 'Trend'
     ]
     
+    # Prettify the status columns
     styled_df['Insider'] = styled_df['Insider'].apply(lambda x: "🟢 Buy" if x else "⚪ None")
     styled_df['Trend'] = styled_df['Trend'].apply(lambda x: "🚀 Leader" if x == "Leader" else "📉 Lag")
+    
+    # Sort by Score
     styled_df = styled_df.sort_values(by='Score', ascending=False)
     
     return styled_df
@@ -96,19 +129,19 @@ def main():
         # --- DATA TABLE ---
         st.subheader("🎯 High-Conviction Radar")
         
-        # --- COMPREHENSIVE LEGEND ---
         st.info("""
-        **Legend:** **Score:** 70+ (💎 Crystal), 45-65 (✅ Conviction), <45 (ℹ️ Neutral) | 
-        **Rating:** Transition of Consensus (triggers +30 if improving vs stored) | 
-        **News:** Sentiment of Last 5 Headlines (>0.10 = +20) | 
-        **Vol Shift:** Current vs 10-day Avg (>1.5x = +10) | 
-        **Trend:** RS vs Sector ETF (Last 30 Days | 🚀 Leader = +20) | 
-        **Insider:** Recent Activity (Last 5 Trans. | 🟢 Buy = +10) | 
-        **Short %:** Float Shorted (>10% = Squeeze Potential +10)
+        **Legend:** **Score:** 70+ (💎 Crystal), 45-65 (✅ Conviction) | 
+        **Rating:** Transition (Analyst Count, Raw Avg) | 
+        **News:** Sentiment (>0.10 = +20) | 
+        **Vol Shift:** vs 10-day Avg (>1.5x = +10) | 
+        **Trend:** RS vs Sector (🚀 Leader = +20) | 
+        **Insider:** Purchase (🟢 Buy = +10) | 
+        **Short %:** Squeeze Potential (>10% = +10)
         """)
         
         clean_df = style_dataframe(df)
 
+        # Render the styled dataframe
         st.dataframe(
             clean_df.style.background_gradient(cmap='Greens', subset=['Score'])
             .format({

@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import psycopg2
+import time
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
 from datetime import datetime
@@ -21,17 +22,23 @@ def get_db_connection():
 def get_sentiment(ticker):
     analyzer = SentimentIntensityAnalyzer()
     try:
+        # Give the API a half-second breather to prevent throttling
+        time.sleep(0.5) 
+        
         stock = yf.Ticker(ticker)
         news = stock.news
-        if not news:
+        
+        if not news or len(news) == 0:
             return 0.0
         
         scores = []
         for n in news[:5]:
             vs = analyzer.polarity_scores(n['title'])
             scores.append(vs['compound'])
+        
         return sum(scores) / len(scores)
-    except:
+    except Exception as e:
+        print(f"⚠️ News fetch failed for {ticker}: {e}")
         return 0.0
 
 def get_relative_strength(ticker):
