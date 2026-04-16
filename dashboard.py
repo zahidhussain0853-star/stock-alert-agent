@@ -18,12 +18,15 @@ load_dotenv()
 def get_data():
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        # Updated Query to include new Fundamental Pillars
         query = """
         SELECT DISTINCT ON (symbol) 
             symbol, price, final_score, signal_label, 
             analyst_transition, news_sentiment, volume_delta,
             insider_buying, short_float_pct, rs_status, 
-            num_analysts, raw_rating, prev_raw_rating, timestamp
+            num_analysts, raw_rating, prev_raw_rating,
+            sector, operating_margin, return_on_equity, free_cash_flow,
+            timestamp
         FROM quant_signals
         ORDER BY symbol, timestamp DESC;
         """
@@ -47,22 +50,14 @@ def translate_rating(val):
     except: return "Neutral"
 
 def format_detailed_rating(row):
-    """
-    Detailed transition: 
-    Prev Label -> Curr Label (Count, Curr Avg, Prev Avg -> Curr Avg)
-    """
     try:
         now_score = row.get('raw_rating')
         prev_score = row.get('prev_raw_rating')
         count = row.get('num_analysts')
-        
-        # Handle cases where there is no previous score yet
         safe_prev = now_score if pd.isna(prev_score) else prev_score
         safe_count = 0 if pd.isna(count) else int(count)
-        
         prev_label = translate_rating(safe_prev)
         now_label = translate_rating(now_score)
-        
         return f"{prev_label} → {now_label} ({safe_count}, {now_score:.2f}, {safe_prev:.2f} → {now_score:.2f})"
     except:
         return "Pending"
@@ -84,17 +79,14 @@ def main():
     m4.metric("Market Sentiment", f"{df['news_sentiment'].mean():.2f}")
 
     st.markdown("---")
-    st.subheader("🎯 High-Conviction Radar")
     
-    # 2. Extended Legend (Locked as Baseline)
+    # 2. Updated Legend with Weighting and Fundamentals
     st.info("""
-    **Legend:** Score: 70+ (💎 Crystal), 45-65 (✅ Conviction), <45 (ℹ️ Neutral) | 
-    **Rating:** Transition (Analyst Count, Raw Avg, Prev → Now) | 
-    **News:** Sentiment (>0.10 = +20) | 
-    **Vol Shift:** vs 10-day Avg (>1.5x = +10) | 
-    **Trend:** RS vs Sector (🚀 Leader = +20) | 
-    **Insider:** Purchase (🟢 Buy = +10) | 
-    **Short %:** Squeeze Potential (>10% = +10)
+    **Legend & Weighting:** * **Momentum:** RS Leader (+20) | Sentiment > 0.1 (+20) | Vol Shift > 1.5x (+10)
+    * **Analyst:** Base Score ((5-Rating)*10) | Upgrade (+20)
+    * **Fundamentals (Tech/Retail):** Op. Margin > 25% (+10) | Debt/Equity < 100 (+5)
+    * **Fundamentals (Finance):** ROE > 15% (+15)
+    * **Speculative:** Short % > 10 (+10) | Insider Purchase (+10)
     """)
 
     # 3. Data Processing
@@ -110,15 +102,16 @@ def main():
     def style_score(v):
         if v >= 70: return 'background-color: #004d1a; color: white; font-weight: bold' 
         if v >= 45: return 'background-color: #28a745; color: white' 
-        if v >= 20: return 'background-color: #85e085; color: #00260a'
         return ''
 
     final_df = display_df.rename(columns={
         'symbol': 'Ticker', 'price': 'Price', 'final_score': 'Score', 
-        'news_sentiment': 'News', 'volume_delta': 'Vol Shift', 'short_float_pct': 'Short %'
+        'news_sentiment': 'News', 'volume_delta': 'Vol Shift', 'short_float_pct': 'Short %',
+        'operating_margin': 'Op Margin', 'return_on_equity': 'ROE', 'sector': 'Sector'
     })
 
-    cols = ['Ticker', 'Price', 'Score', 'Signal', 'Rating Details', 'News', 'Vol Shift', 'Insider', 'Short %', 'Trend']
+    # Updated columns to include Fundamentals in the view
+    cols = ['Ticker', 'Sector', 'Price', 'Score', 'Signal', 'Rating Details', 'News', 'Vol Shift', 'Op Margin', 'ROE', 'Trend']
 
     # 5. Final Render
     st.dataframe(
@@ -131,8 +124,10 @@ def main():
             "Score": st.column_config.NumberColumn(format="%d"),
             "News": st.column_config.NumberColumn(format="%.2f"),
             "Vol Shift": st.column_config.NumberColumn(format="%.2fx"),
-            "Short %": st.column_config.NumberColumn(format="%.1f%%"),
-            "Rating Details": st.column_config.TextColumn(width="large")
+            "Op Margin": st.column_config.NumberColumn(format="%.2%"),
+            "ROE": st.column_config.NumberColumn(format="%.2%"),
+            "Rating Details": st.column_config.TextColumn(width="large"),
+            "Sector": st.column_config.TextColumn(width="medium")
         }
     )
 

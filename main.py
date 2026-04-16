@@ -105,12 +105,16 @@ def run_scanner():
             debt_equity = info.get('debtToEquity', 0)
             roe = info.get('returnOnEquity', 0)
             
-            fcf = fcf if fcf is not None else 0
-            op_margin = op_margin if op_margin is not None else 0
-            debt_equity = debt_equity if debt_equity is not None else 0
-            roe = roe if roe is not None else 0
+            # 3. Speculative Data (The missing links)
+            short_raw = info.get('shortPercentOfFloat', 0)
+            short_float_pct = (short_raw * 100) if short_raw is not None else 0
+            
+            insider_raw = info.get('heldPercentInsiders', 0)
+            insider_val = (insider_raw * 100) if insider_raw is not None else 0
+            # Logic: If insiders own > 5% or have significant skin, mark as True
+            insider_buying = True if insider_val > 5.0 else False
 
-            # 3. Analyst Logic
+            # 4. Analyst Logic
             raw_curr = info.get('recommendationMean')
             num_analysts = info.get('numberOfAnalystOpinions', 0)
             curr_rating = float(raw_curr) if raw_curr is not None else 3.0
@@ -131,21 +135,23 @@ def run_scanner():
             rs_status = get_relative_strength(symbol)
             if rs_status == "Leader": score += 20
             
+            # Speculative Boosts
+            if short_float_pct > 10: score += 10 # Short Squeeze potential
+            if insider_buying: score += 10 # Strong internal conviction
+            
             # FUNDAMENTAL PILLAR ADJUSTMENT
             if sector == "Financial Services":
-                # Banks: Judge by ROE (Return on Equity)
-                if roe > 0.15: score += 15  # 15% ROE is the gold standard for banks
+                if roe > 0.15: score += 15
             else:
-                # Tech/Retail: Judge by Margins & Debt
                 if op_margin > 0.25: score += 10
                 if 0 < debt_equity < 100: score += 5
             
-            # 4. Final Processing
+            # 5. Final Processing
             score = min(max(round(score, 0), 0), 100)
             label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
             transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
 
-            # 5. UPSERT
+            # 6. UPSERT
             cur.execute("""
                 INSERT INTO quant_signals 
                 (symbol, price, final_score, signal_label, analyst_transition, 
@@ -173,11 +179,11 @@ def run_scanner():
                     return_on_equity = EXCLUDED.return_on_equity,
                     timestamp = CURRENT_TIMESTAMP;
             """, (symbol, price, score, label, transition_text, sentiment, 
-                  vol_delta, False, 0, rs_status, num_analysts, 
+                  vol_delta, insider_buying, short_float_pct, rs_status, num_analysts, 
                   curr_rating, prev_rating, fcf, op_margin, debt_equity, sector, roe))
             
             conn.commit()
-            print(f"✅ {symbol} ({sector}) | Score: {score}")
+            print(f"✅ {symbol} ({sector}) | Score: {score} | Short: {short_float_pct:.1f}% | Insider: {insider_buying}")
 
         except Exception as e:
             conn.rollback()
