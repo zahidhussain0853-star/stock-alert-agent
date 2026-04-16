@@ -1,138 +1,138 @@
-import streamlit as st
+import yfinance as yf
 import pandas as pd
-from sqlalchemy import create_engine
+import psycopg2
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Alpha Intelligence Command Center", layout="wide")
 load_dotenv()
 
-# --- DATABASE CONNECTION ---
-def get_data():
-    # Convert 'postgres://' to 'postgresql://' if necessary for SQLAlchemy
-    db_url = os.getenv("DATABASE_URL")
-    if db_url and db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    
-    # Create SQLAlchemy engine
-    engine = create_engine(db_url)
-    
-    query = """
-    SELECT DISTINCT ON (symbol) 
-        symbol, price, final_score, signal_label, 
-        analyst_transition, news_sentiment, volume_delta,
-        insider_buying, short_float_pct, rs_status, 
-        num_analysts, raw_rating, timestamp
-    FROM quant_signals
-    ORDER BY symbol, timestamp DESC;
-    """
-    # Using the engine instead of a raw connection object
-    df = pd.read_sql(query, engine)
-    return df
+# --- CONFIGURATION ---
+TICKERS = ['AAPL', 'MSFT', 'NVDA', 'AVGO', 'GOOGL', 'AMZN', 'META', 'BRK-B', 'LLY', 'V', 
+           'TSLA', 'WMT', 'JPM', 'UNH', 'MA', 'ORCL', 'COST', 'XOM', 'HD', 'PG', 
+           'NFLX', 'JNJ', 'BAC', 'ABBV', 'SAP', 'CRM', 'WFC', 'KO', 'DIS', 'ADBE', 
+           'CSCO', 'TMUS', 'MRK', 'TMO', 'ACN', 'AMD', 'PFE', 'LIN', 'PEP', 'ABT', 
+           'MCD', 'AVGO', 'INTC', 'HON', 'NKE', 'CAT', 'TXN', 'QCOM', 'SBUX', 'LOW']
 
-# --- RATING TRANSLATOR ---
-def translate_rating(val):
+def get_db_connection():
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
+
+def get_sentiment(ticker):
+    analyzer = SentimentIntensityAnalyzer()
     try:
-        f_val = float(val)
-        if f_val <= 1.5: return "Strong Buy"
-        if f_val <= 2.5: return "Buy"
-        if f_val <= 3.5: return "Hold"
-        if f_val <= 4.5: return "Sell"
-        return "Strong Sell"
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if not news:
+            return 0.0
+        
+        scores = []
+        for n in news[:5]:
+            vs = analyzer.polarity_scores(n['title'])
+            scores.append(vs['compound'])
+        return sum(scores) / len(scores)
     except:
-        return "N/A"
+        return 0.0
 
-# --- FORMATTER ---
-def format_detailed_transition(row):
+def get_relative_strength(ticker):
     try:
-        parts = row['analyst_transition'].split(" → ")
-        prev = translate_rating(parts[0])
-        now = translate_rating(parts[1])
-        count = int(row['num_analysts'])
-        avg = float(row['raw_rating'])
-        return f"{prev} → {now} ({count}, {avg:.1f})"
+        # RS relative to Sector or SPY (simplified to SPY here)
+        data = yf.download([ticker, 'SPY'], period='1mo', progress=False)['Close']
+        returns = data.pct_change().iloc[-1]
+        return "Leader" if returns[ticker] > returns['SPY'] else "Lag"
     except:
-        return row['analyst_transition']
+        return "Lag"
 
-# --- STYLING FUNCTION ---
-def style_dataframe(df):
-    df['Detailed Rating'] = df.apply(format_detailed_transition, axis=1)
+def run_scanner():
+    conn = get_db_connection()
+    cur = conn.cursor()
     
-    styled_df = df[[
-        'symbol', 'price', 'final_score', 'signal_label', 
-        'Detailed Rating', 'news_sentiment', 'volume_delta',
-        'insider_buying', 'short_float_pct', 'rs_status'
-    ]].copy()
-    
-    styled_df.columns = [
-        'Ticker', 'Price', 'Score', 'Signal', 
-        'Rating (Prev→Now)', 'News', 'Vol Shift',
-        'Insider', 'Short %', 'Trend'
-    ]
-    
-    styled_df['Insider'] = styled_df['Insider'].apply(lambda x: "🟢 Buy" if x else "⚪ None")
-    styled_df['Trend'] = styled_df['Trend'].apply(lambda x: "🚀 Leader" if x == "Leader" else "📉 Lag")
-    styled_df = styled_df.sort_values(by='Score', ascending=False)
-    
-    return styled_df
-
-# --- MAIN DASHBOARD UI ---
-def main():
-    st.title("📡 Alpha Intelligence Command Center")
-    
-    if st.button("🔄 Force Refresh Data"):
-        st.cache_data.clear()
-
-    try:
-        df = get_data()
-        
-        # --- METRICS BAR ---
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Live Coverage", f"{len(df)} Stocks")
-        with col2:
-            crystals = len(df[df['final_score'] >= 70])
-            st.metric("💎 Crystal Signals", crystals)
-        with col3:
-            avg_score = df['final_score'].mean()
-            st.metric("Avg Market Score", f"{avg_score:.1f}")
-        with col4:
-            mkt_sentiment = df['news_sentiment'].mean()
-            st.metric("Market Sentiment", f"{mkt_sentiment:.2f}")
-
-        st.markdown("---")
-
-        # --- DATA TABLE ---
-        st.subheader("🎯 High-Conviction Radar")
-        
-        st.info("""
-        **Legend:** **Score:** 70+ (💎 Crystal), 45-65 (✅ Conviction) | 
-        **Rating:** Transition (Analyst Count, Raw Avg) | 
-        **News:** Last 5 Sentiment (>0.10 = +20) | 
-        **Vol Shift:** vs 10d Avg (>1.5x = +10) | 
-        **Trend:** RS vs Sector (30d Leader = +20) | 
-        **Insider:** Purchase (🟢 Buy = +10) | 
-        **Short %:** Squeeze Potential (>10% = +10)
-        """)
-        
-        clean_df = style_dataframe(df)
-
-        st.dataframe(
-            clean_df.style.background_gradient(cmap='Greens', subset=['Score'])
-            .format({
-                'Price': '${:.2f}',
-                'News': '{:.2f}',
-                'Vol Shift': '{:.2f}x',
-                'Short %': '{:.1f}%'
-            }),
-            use_container_width=True,
-            hide_index=True,
-            height=800
+    # Ensure table exists with new columns
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS quant_signals (
+            symbol TEXT,
+            price FLOAT,
+            final_score FLOAT,
+            signal_label TEXT,
+            analyst_transition TEXT,
+            news_sentiment FLOAT,
+            volume_delta FLOAT,
+            insider_buying BOOLEAN,
+            short_float_pct FLOAT,
+            rs_status TEXT,
+            num_analysts INT,
+            raw_rating FLOAT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+    """)
+    conn.commit()
 
-    except Exception as e:
-        st.error(f"Error loading dashboard: {e}")
+    print(f"🚀 Starting Scan at {datetime.now()}")
+
+    for symbol in TICKERS:
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            # 1. Price & Volume
+            price = info.get('currentPrice', 0)
+            avg_vol = info.get('averageVolume', 1)
+            curr_vol = info.get('regularMarketVolume', 0)
+            vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
+            
+            # 2. Analyst Memory Logic
+            curr_rating = info.get('recommendationMean', 3.0)
+            num_analysts = info.get('numberOfAnalystOpinions', 0)
+            
+            cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1", (symbol,))
+            prev_row = cur.fetchone()
+            prev_rating = prev_row[0] if prev_row else curr_rating
+            
+            transition_bonus = 30 if curr_rating < prev_rating else 0
+            transition_text = f"{prev_rating} → {curr_rating}"
+
+            # 3. Sentiment & RS
+            sentiment = get_sentiment(symbol)
+            rs_status = get_relative_strength(symbol)
+            
+            # 4. Squeeze & Insider
+            short_pct = info.get('shortPercentOfFloat', 0) * 100
+            
+            insider_data = stock.insider_transactions
+            insider_buy = False
+            if insider_data is not None and not insider_data.empty:
+                insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
+
+            # --- SCORING ALGORITHM ---
+            score = 0
+            score += transition_bonus
+            if sentiment > 0.1: score += 20
+            if vol_delta > 1.5: score += 10
+            if rs_status == "Leader": score += 20
+            if insider_buy: score += 10
+            if short_pct > 10: score += 10
+            
+            label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
+
+            # 5. Save to DB
+            cur.execute("""
+                INSERT INTO quant_signals 
+                (symbol, price, final_score, signal_label, analyst_transition, 
+                 news_sentiment, volume_delta, insider_buying, short_float_pct, 
+                 rs_status, num_analysts, raw_rating)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (symbol, price, score, label, transition_text, sentiment, 
+                  vol_delta, insider_buy, short_pct, rs_status, num_analysts, curr_rating))
+            
+            conn.commit()
+            print(f"✅ {symbol} processed | Score: {score}")
+
+        except Exception as e:
+            print(f"❌ Error scanning {symbol}: {e}")
+
+    cur.close()
+    conn.close()
+    print("🏁 Scan Complete.")
 
 if __name__ == "__main__":
-    main()
+    run_scanner()
