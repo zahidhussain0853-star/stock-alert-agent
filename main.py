@@ -47,11 +47,6 @@ def run_scanner():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # Ensure table exists with new columns
-    def run_scanner():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
     # 1. Ensure table exists
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quant_signals (
