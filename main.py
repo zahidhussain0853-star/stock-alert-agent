@@ -59,11 +59,6 @@ def get_sentiment(ticker):
     
     return round(avg_sentiment, 2)
             
-        return sum(scores) / len(scores)
-    except Exception as e:
-        # This will now tell us if it's a 'title' error or something else
-        print(f"⚠️ News fetch failed for {ticker}: {e}")
-        return 0.0
 
 def get_relative_strength(ticker):
     try:
