@@ -60,7 +60,6 @@ def run_scanner():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # Ensure Table exists with new columns
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quant_signals (
             symbol TEXT PRIMARY KEY,
@@ -79,33 +78,37 @@ def run_scanner():
             free_cash_flow BIGINT,
             operating_margin FLOAT,
             debt_to_equity FLOAT,
+            sector TEXT,
+            return_on_equity FLOAT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
 
-    print(f"🚀 Starting Scan at {datetime.now()}")
+    print(f"🚀 Starting Sector-Adaptive Scan at {datetime.now()}")
 
     for symbol in TICKERS:
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # 1. Price & Volume
+            # 1. Core Data
             price = info.get('currentPrice', 0)
             avg_vol = info.get('averageVolume', 1)
             curr_vol = info.get('regularMarketVolume', 0)
             vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
+            sector = info.get('sector', 'Unknown')
             
-            # 2. Fundamental Pillars (NEW)
+            # 2. Fundamentals
             fcf = info.get('freeCashflow', 0)
             op_margin = info.get('operatingMargins', 0)
             debt_equity = info.get('debtToEquity', 0)
+            roe = info.get('returnOnEquity', 0)
             
-            # Sanitize None values
             fcf = fcf if fcf is not None else 0
             op_margin = op_margin if op_margin is not None else 0
             debt_equity = debt_equity if debt_equity is not None else 0
+            roe = roe if roe is not None else 0
 
             # 3. Analyst Logic
             raw_curr = info.get('recommendationMean')
@@ -116,45 +119,40 @@ def run_scanner():
             prev_row = cur.fetchone()
             prev_rating = float(prev_row[0]) if prev_row and prev_row[0] is not None else curr_rating 
 
-            # --- SCORING ALGORITHM ---
-            # Base Score (Inverted: 1.0 is best)
+            # --- SECTOR-SPECIFIC SCORING ALGORITHM ---
             base_score = (5.0 - curr_rating) * 10 
             score = base_score
             
-            if curr_rating < prev_rating: score += 20 # Upgrade boost
-            
+            # Momentum & Sentiment
+            if curr_rating < prev_rating: score += 20 
             sentiment = get_sentiment(symbol)
             if sentiment > 0.1: score += 20
             if vol_delta > 1.5: score += 10
-            
             rs_status = get_relative_strength(symbol)
             if rs_status == "Leader": score += 20
             
-            # New Fundamental Bonus (Maximum +15 pts)
-            if op_margin > 0.25: score += 10    # Efficiency Reward
-            if 0 < debt_equity < 100: score += 5  # Balance Sheet Reward
+            # FUNDAMENTAL PILLAR ADJUSTMENT
+            if sector == "Financial Services":
+                # Banks: Judge by ROE (Return on Equity)
+                if roe > 0.15: score += 15  # 15% ROE is the gold standard for banks
+            else:
+                # Tech/Retail: Judge by Margins & Debt
+                if op_margin > 0.25: score += 10
+                if 0 < debt_equity < 100: score += 5
             
-            short_pct = info.get('shortPercentOfFloat', 0) * 100
-            if short_pct > 10: score += 10
-            
-            insider_data = stock.insider_transactions
-            insider_buy = False
-            if insider_data is not None and not insider_data.empty:
-                insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
-            if insider_buy: score += 10
-
+            # 4. Final Processing
             score = min(max(round(score, 0), 0), 100)
             label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
             transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
 
-            # 5. UPSERT (Update columns including new fundamental pillars)
+            # 5. UPSERT
             cur.execute("""
                 INSERT INTO quant_signals 
                 (symbol, price, final_score, signal_label, analyst_transition, 
                  news_sentiment, volume_delta, insider_buying, short_float_pct, 
                  rs_status, num_analysts, raw_rating, prev_raw_rating, 
-                 free_cash_flow, operating_margin, debt_to_equity, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                 free_cash_flow, operating_margin, debt_to_equity, sector, return_on_equity, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (symbol) DO UPDATE SET
                     price = EXCLUDED.price,
                     final_score = EXCLUDED.final_score,
@@ -171,13 +169,15 @@ def run_scanner():
                     free_cash_flow = EXCLUDED.free_cash_flow,
                     operating_margin = EXCLUDED.operating_margin,
                     debt_to_equity = EXCLUDED.debt_to_equity,
+                    sector = EXCLUDED.sector,
+                    return_on_equity = EXCLUDED.return_on_equity,
                     timestamp = CURRENT_TIMESTAMP;
             """, (symbol, price, score, label, transition_text, sentiment, 
-                  vol_delta, insider_buy, short_pct, rs_status, num_analysts, 
-                  curr_rating, prev_rating, fcf, op_margin, debt_equity))
+                  vol_delta, False, 0, rs_status, num_analysts, 
+                  curr_rating, prev_rating, fcf, op_margin, debt_equity, sector, roe))
             
             conn.commit()
-            print(f"✅ {symbol} processed | Score: {score} | Margin: {op_margin:.2%}")
+            print(f"✅ {symbol} ({sector}) | Score: {score}")
 
         except Exception as e:
             conn.rollback()
@@ -185,7 +185,7 @@ def run_scanner():
 
     cur.close()
     conn.close()
-    print("🏁 Scan Complete.")
+    print("🏁 Sector-Adaptive Scan Complete.")
 
 if __name__ == "__main__":
     run_scanner()
