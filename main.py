@@ -22,22 +22,29 @@ def get_db_connection():
 def get_sentiment(ticker):
     analyzer = SentimentIntensityAnalyzer()
     try:
-        # Give the API a half-second breather to prevent throttling
-        time.sleep(0.5) 
-        
+        time.sleep(0.5) # Prevent rate limiting
         stock = yf.Ticker(ticker)
         news = stock.news
         
-        if not news or len(news) == 0:
+        if not news:
             return 0.0
         
         scores = []
         for n in news[:5]:
-            vs = analyzer.polarity_scores(n['title'])
-            scores.append(vs['compound'])
+            # Use .get() to prevent 'title' KeyErrors
+            # Yahoo sometimes uses 'title' or 'headline'
+            title = n.get('title') or n.get('headline')
+            
+            if title:
+                vs = analyzer.polarity_scores(title)
+                scores.append(vs['compound'])
         
+        if not scores:
+            return 0.0
+            
         return sum(scores) / len(scores)
     except Exception as e:
+        # This will now tell us if it's a 'title' error or something else
         print(f"⚠️ News fetch failed for {ticker}: {e}")
         return 0.0
 
