@@ -113,7 +113,7 @@ def run_scanner():
             # --- 2. ANALYST MEMORY LOGIC ---
             cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s", (symbol,))
             prev_row = cur.fetchone()
-            prev_rating = float(prev_row[0]) if prev_row and prev_row[0] is not NULL else curr_rating 
+            prev_rating = float(prev_row[0]) if prev_row and prev_row[0] is not None else curr_rating 
             
             # --- 3. SCORING ALGORITHM (Stepwise Refined) ---
             score = 0
