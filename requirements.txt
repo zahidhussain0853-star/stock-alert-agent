@@ -7,3 +7,4 @@ feedparser
 psycopg2-binary
 streamlit
 vaderSentiment
+sqlalchemy
