@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
+from sqlalchemy import create_engine
 import os
 from dotenv import load_dotenv
 
@@ -10,8 +10,14 @@ load_dotenv()
 
 # --- DATABASE CONNECTION ---
 def get_data():
-    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-    # Added 'num_analysts' and 'raw_rating' to the SELECT
+    # Convert 'postgres://' to 'postgresql://' if necessary for SQLAlchemy
+    db_url = os.getenv("DATABASE_URL")
+    if db_url and db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    
+    # Create SQLAlchemy engine
+    engine = create_engine(db_url)
+    
     query = """
     SELECT DISTINCT ON (symbol) 
         symbol, price, final_score, signal_label, 
@@ -21,8 +27,8 @@ def get_data():
     FROM quant_signals
     ORDER BY symbol, timestamp DESC;
     """
-    df = pd.read_sql(query, conn)
-    conn.close()
+    # Using the engine instead of a raw connection object
+    df = pd.read_sql(query, engine)
     return df
 
 # --- RATING TRANSLATOR ---
@@ -37,9 +43,8 @@ def translate_rating(val):
     except:
         return "N/A"
 
-# --- NEW FORMATTER ---
+# --- FORMATTER ---
 def format_detailed_transition(row):
-    """Combines transition with (count, average)"""
     try:
         parts = row['analyst_transition'].split(" → ")
         prev = translate_rating(parts[0])
@@ -52,7 +57,6 @@ def format_detailed_transition(row):
 
 # --- STYLING FUNCTION ---
 def style_dataframe(df):
-    # Apply the detailed formatting using both columns
     df['Detailed Rating'] = df.apply(format_detailed_transition, axis=1)
     
     styled_df = df[[
