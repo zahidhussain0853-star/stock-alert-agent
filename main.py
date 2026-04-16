@@ -94,66 +94,109 @@ def run_screener():
     print("🚀 Starting Intelligence Scan...")
 
     for symbol, sector_etf in TICKERS_MAPPING.items():
-        # Defaults
-        price, curr_rating, vol_delta, sentiment, is_leader, insider_buy = 0.0, 3.0, 1.0, 0.0, False, False
+        # 1. Initialize variables with defaults to prevent Scoping/NoneType errors
+        price, curr_rating, vol_delta, sentiment = 0.0, 3.0, 1.0, 0.0
+        is_leader, insider_buy, short_pct = False, False, 0.0
         
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # 1. Basics & Volume
+            # --- MARKET DATA & VOLUME ---
             price = info.get('regularMarketPrice') or info.get('currentPrice') or 0.0
             curr_rating = info.get("recommendationMean", 3.0)
+            
             avg_vol = info.get("averageVolume10days") or info.get("averageVolume") or 1.0
             curr_vol = info.get("regularMarketVolume") or 0.0
             vol_delta = float(curr_vol / avg_vol) if avg_vol > 0 else 1.0
 
-            # 2. News Sentiment (New Scraper)
+            # --- SHORT INTEREST (SQUEEZE DATA) ---
+            # yfinance returns this as a decimal (e.g., 0.15 for 15%)
+            raw_short = info.get("shortPercentOfFloat") or 0.0
+            short_pct = float(raw_short * 100) if raw_short < 1.0 else float(raw_short)
+
+            # --- NEWS SENTIMENT ---
             sentiment = get_sentiment(symbol)
             
-            # 3. RS & Insider Check
+            # --- RELATIVE STRENGTH ---
             is_leader = check_rs(symbol, sector_etf)
+            
+            # --- INSIDER TRANSACTIONS ---
             try:
                 insider_data = stock.insider_transactions
                 if insider_data is not None and not insider_data.empty:
+                    # Look for "Purchase" in the most recent 5 transactions
                     insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
             except:
                 insider_buy = False
 
-            # 4. Scoring Logic
+            # --- SCORING LOGIC (The Algorithm) ---
             prev_rating = get_last_rating(cur, symbol)
             score = 0
-            if curr_rating < prev_rating: score += 30
-            if sentiment > 0.10: score += 20  # Lowered threshold slightly to be more inclusive
-            if is_leader: score += 20
-            if vol_delta > 1.5: score += 10
-            if insider_buy: score += 10
+            
+            # A) Analyst Upgrade Memory (+30)
+            if curr_rating < prev_rating: 
+                score += 30
+            
+            # B) Positive News Sentiment (+20)
+            if sentiment > 0.10: 
+                score += 20
+                
+            # C) RS Leadership (+20)
+            if is_leader: 
+                score += 20
+                
+            # D) Institutional Volume Spike (+10)
+            if vol_delta > 1.5: 
+                score += 10
+                
+            # E) Insider Buying Activity (+10)
+            if insider_buy: 
+                score += 10
+                
+            # F) Short Squeeze Potential (+10)
+            if short_pct > 10.0: 
+                score += 10
 
-            signal = "💎 CRYSTAL" if score >= 70 else "✅ CONVICTION" if score >= 45 else "ℹ️ NEUTRAL"
+            # --- SIGNAL ATTRIBUTION ---
+            if score >= 70:
+                signal = "💎 CRYSTAL"
+            elif score >= 45:
+                signal = "✅ CONVICTION"
+            else:
+                signal = "ℹ️ NEUTRAL"
 
+            # --- PACKAGE RESULTS ---
             results.append({
-                "Ticker": symbol, "Price": price, 
+                "Ticker": symbol, 
+                "Price": price, 
                 "Consensus": f"{prev_rating:.1f} → {curr_rating:.1f}",
-                "News": sentiment, "RS": "Leader" if is_leader else "Lag",
-                "Insider": insider_buy, "Squeeze": 0.0,
-                "Score": score, "Signal": signal, "VolDelta": vol_delta
+                "News": sentiment, 
+                "RS": "Leader" if is_leader else "Lag",
+                "Insider": insider_buy, 
+                "Squeeze": short_pct,
+                "Score": score, 
+                "Signal": signal, 
+                "VolDelta": vol_delta
             })
 
+            # --- UPDATE DATABASE MEMORY ---
             cur.execute("""
                 INSERT INTO analyst_ratings (symbol, last_rating) 
                 VALUES (%s, %s) 
                 ON CONFLICT (symbol) DO UPDATE SET last_rating = EXCLUDED.last_rating
             """, (symbol, curr_rating))
             
-            print(f"✅ {symbol} | Score: {score} | News: {sentiment:.2f} | Vol: {vol_delta:.2f}x")
+            print(f"✅ {symbol} processed | Score: {score} | Squeeze: {short_pct:.1f}%")
 
         except Exception as e:
             print(f"❌ Error skipping {symbol}: {e}")
 
+    # --- FINAL ARCHIVE TO DB ---
     if results:
         save_signals_to_db(cur, results)
         conn.commit()
-        print(f"📊 Scan Complete. {len(results)} Tickers Archived.")
+        print(f"📊 Intelligence archived. Total: {len(results)} Tickers.")
 
     cur.close()
     conn.close()

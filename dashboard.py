@@ -46,18 +46,40 @@ if not df.empty:
     st.subheader("🎯 High-Conviction Radar")
 
     # Formatting and Styling
+    # --- DATAFRAME WITH HIGHLIGHTS ---
     def style_dataframe(df):
-        # We create a copy for display
+        # 1. Select the columns (Including the ones we missed)
         styled_df = df[[
             'symbol', 'price', 'final_score', 'signal_label', 
-            'analyst_transition', 'news_sentiment', 'volume_delta'
+            'analyst_transition', 'news_sentiment', 'volume_delta',
+            'insider_buying', 'rs_status' # Added these back
         ]].copy()
         
+        # 2. Rename for the user
         styled_df.columns = [
             'Ticker', 'Price', 'Score', 'Signal', 
-            'Rating (Prev→Now)', 'News Score', 'Vol vs Avg'
+            'Rating (Prev→Now)', 'News', 'Vol Shift',
+            'Insider', 'Trend'
         ]
+        
+        # 3. Clean up the Insider column to look professional
+        styled_df['Insider'] = styled_df['Insider'].apply(lambda x: "🟢 Buy" if x else "⚪ None")
+        
         return styled_df
+
+    clean_df = style_dataframe(df)
+
+    # 4. Display with formatting
+    st.dataframe(
+        clean_df.style.background_gradient(cmap='Greens', subset=['Score'])
+        .format({
+            'Price': '${:.2f}',
+            'News': '{:.2f}',
+            'Vol Shift': '{:.2f}x'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
 
     clean_df = style_dataframe(df)
 
