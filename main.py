@@ -27,7 +27,8 @@ def get_sentiment(ticker):
     
     # --- SOURCE 1: Yahoo Finance ---
     try:
-        time.sleep(0.5)
+        # Deep breath strategy for stability
+        time.sleep(1.0) 
         stock = yf.Ticker(ticker)
         yf_news = stock.news
         if yf_news:
@@ -39,7 +40,6 @@ def get_sentiment(ticker):
         print(f"⚠️ Yahoo News failed for {ticker}, trying Google RSS...")
 
     # --- SOURCE 2: Google News RSS (Fallback/Supplement) ---
-    # If Yahoo gave us nothing or we want more variety, hit Google
     if len(titles) < 3:
         try:
             rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+when:1d&hl=en-US&gl=US&ceid=US:en"
@@ -62,7 +62,6 @@ def get_sentiment(ticker):
 
 def get_relative_strength(ticker):
     try:
-        # RS relative to Sector or SPY (simplified to SPY here)
         data = yf.download([ticker, 'SPY'], period='1mo', progress=False)['Close']
         returns = data.pct_change().iloc[-1]
         return "Leader" if returns[ticker] > returns['SPY'] else "Lag"
@@ -90,10 +89,11 @@ def run_scanner():
         )
     """)
     
-    # 2. SELF-HEALING: Add new columns if they are missing from previous versions
+    # 2. SELF-HEALING: Add new columns if missing
     columns_to_add = {
         "num_analysts": "INT",
-        "raw_rating": "FLOAT"
+        "raw_rating": "FLOAT",
+        "prev_raw_rating": "FLOAT" # <--- ADDED THIS NEW COLUMN
     }
     
     for col, col_type in columns_to_add.items():
@@ -113,82 +113,4 @@ def run_scanner():
 
     for symbol in TICKERS:
         try:
-            stock = yf.Ticker(symbol)
-            info = stock.info
-            
-            # 1. Price & Volume
-            price = info.get('currentPrice', 0)
-            avg_vol = info.get('averageVolume', 1)
-            curr_vol = info.get('regularMarketVolume', 0)
-            vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
-            
-            # --- 2. ANALYST MEMORY LOGIC (REPAIRED) ---
-            raw_curr = info.get('recommendationMean')
-            num_analysts = info.get('numberOfAnalystOpinions', 0)
-            
-            # SAFE CONVERSION: If raw_curr is None, use 3.0 (Neutral)
-            if raw_curr is not None:
-                curr_rating = float(raw_curr)
-            else:
-                curr_rating = 3.0
-                print(f"⚠️ {symbol}: No rating found, defaulting to 3.0")
-            
-            # FETCH PREVIOUS RATING
-            cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1", (symbol,))
-            prev_row = cur.fetchone()
-            
-            # SAFE CONVERSION: Handle potential None in DB
-            if prev_row and prev_row[0] is not None:
-                prev_rating = float(prev_row[0])
-            else:
-                prev_rating = curr_rating  # If no history, no transition bonus
-            
-            # THE COMPARISON: Now safe from NoneType errors
-            transition_bonus = 30 if curr_rating < prev_rating else 0
-            transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
-
-            # 3. Sentiment & RS
-            sentiment = get_sentiment(symbol)
-            rs_status = get_relative_strength(symbol)
-            
-            # 4. Squeeze & Insider
-            short_pct = info.get('shortPercentOfFloat', 0) * 100
-            
-            insider_data = stock.insider_transactions
-            insider_buy = False
-            if insider_data is not None and not insider_data.empty:
-                insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
-
-            # --- SCORING ALGORITHM ---
-            score = 0
-            score += transition_bonus
-            if sentiment > 0.1: score += 20
-            if vol_delta > 1.5: score += 10
-            if rs_status == "Leader": score += 20
-            if insider_buy: score += 10
-            if short_pct > 10: score += 10
-            
-            label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
-
-            # 5. Save to DB
-            cur.execute("""
-                INSERT INTO quant_signals 
-                (symbol, price, final_score, signal_label, analyst_transition, 
-                 news_sentiment, volume_delta, insider_buying, short_float_pct, 
-                 rs_status, num_analysts, raw_rating)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (symbol, price, score, label, transition_text, sentiment, 
-                  vol_delta, insider_buy, short_pct, rs_status, num_analysts, curr_rating))
-            
-            conn.commit()
-            print(f"✅ {symbol} processed | Score: {score}")
-
-        except Exception as e:
-            print(f"❌ Error scanning {symbol}: {e}")
-
-    cur.close()
-    conn.close()
-    print("🏁 Scan Complete.")
-
-if __name__ == "__main__":
-    run_scanner()
+            stock
