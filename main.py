@@ -125,6 +125,9 @@ def run_screener():
             try:
                 insider_data = stock.insider_transactions
                 if insider_data is not None and not insider_data.empty:
+                    print(f"DEBUG: Found {len(insider_data)} transactions for {symbol}")
+                    # Show us what the first one says
+                    print(insider_data['Transaction'].head(1))
                     # Look for "Purchase" in the most recent 5 transactions
                     insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
             except:
