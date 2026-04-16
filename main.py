@@ -96,16 +96,30 @@ def run_scanner():
             curr_vol = info.get('regularMarketVolume', 0)
             vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
             
-            # 2. Analyst Memory Logic
-            curr_rating = info.get('recommendationMean', 3.0)
+            # --- 2. ANALYST MEMORY LOGIC (REPAIRED) ---
+            raw_curr = info.get('recommendationMean')
             num_analysts = info.get('numberOfAnalystOpinions', 0)
             
+            # SAFE CONVERSION: If raw_curr is None, use 3.0 (Neutral)
+            if raw_curr is not None:
+                curr_rating = float(raw_curr)
+            else:
+                curr_rating = 3.0
+                print(f"⚠️ {symbol}: No rating found, defaulting to 3.0")
+            
+            # FETCH PREVIOUS RATING
             cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1", (symbol,))
             prev_row = cur.fetchone()
-            prev_rating = prev_row[0] if prev_row else curr_rating
             
+            # SAFE CONVERSION: Handle potential None in DB
+            if prev_row and prev_row[0] is not None:
+                prev_rating = float(prev_row[0])
+            else:
+                prev_rating = curr_rating  # If no history, no transition bonus
+            
+            # THE COMPARISON: Now safe from NoneType errors
             transition_bonus = 30 if curr_rating < prev_rating else 0
-            transition_text = f"{prev_rating} → {curr_rating}"
+            transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
 
             # 3. Sentiment & RS
             sentiment = get_sentiment(symbol)
