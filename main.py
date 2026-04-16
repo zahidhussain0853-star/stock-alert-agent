@@ -4,8 +4,10 @@ import psycopg2
 import time
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
+import feedparser
 from datetime import datetime
 from dotenv import load_dotenv
+from urllib.parse import quote
 
 load_dotenv()
 
@@ -21,26 +23,41 @@ def get_db_connection():
 
 def get_sentiment(ticker):
     analyzer = SentimentIntensityAnalyzer()
+    titles = []
+    
+    # --- SOURCE 1: Yahoo Finance ---
     try:
-        time.sleep(0.5) # Prevent rate limiting
+        time.sleep(0.5)
         stock = yf.Ticker(ticker)
-        news = stock.news
+        yf_news = stock.news
+        if yf_news:
+            for n in yf_news[:5]:
+                # Safe get for title/headline to prevent KeyErrors
+                t = n.get('title') or n.get('headline')
+                if t: titles.append(t)
+    except Exception as e:
+        print(f"⚠️ Yahoo News failed for {ticker}, trying Google RSS...")
+
+    # --- SOURCE 2: Google News RSS (Fallback/Supplement) ---
+    # If Yahoo gave us nothing or we want more variety, hit Google
+    if len(titles) < 3:
+        try:
+            rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+when:1d&hl=en-US&gl=US&ceid=US:en"
+            feed = feedparser.parse(rss_url)
+            for entry in feed.entries[:5]:
+                if entry.title not in titles:
+                    titles.append(entry.title)
+        except Exception as e:
+            print(f"⚠️ Google News RSS failed for {ticker}: {e}")
+
+    # --- ANALYZE ALL GATHERED TITLES ---
+    if not titles:
+        return 0.0
         
-        if not news:
-            return 0.0
-        
-        scores = []
-        for n in news[:5]:
-            # Use .get() to prevent 'title' KeyErrors
-            # Yahoo sometimes uses 'title' or 'headline'
-            title = n.get('title') or n.get('headline')
-            
-            if title:
-                vs = analyzer.polarity_scores(title)
-                scores.append(vs['compound'])
-        
-        if not scores:
-            return 0.0
+    scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
+    avg_sentiment = sum(scores) / len(scores)
+    
+    return round(avg_sentiment, 2)
             
         return sum(scores) / len(scores)
     except Exception as e:
