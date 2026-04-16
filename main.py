@@ -48,6 +48,11 @@ def run_scanner():
     cur = conn.cursor()
     
     # Ensure table exists with new columns
+    def run_scanner():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # 1. Ensure table exists
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quant_signals (
             symbol TEXT,
@@ -60,11 +65,27 @@ def run_scanner():
             insider_buying BOOLEAN,
             short_float_pct FLOAT,
             rs_status TEXT,
-            num_analysts INT,
-            raw_rating FLOAT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # 2. SELF-HEALING: Add new columns if they are missing from previous versions
+    columns_to_add = {
+        "num_analysts": "INT",
+        "raw_rating": "FLOAT"
+    }
+    
+    for col, col_type in columns_to_add.items():
+        cur.execute(f"""
+            DO $$ 
+            BEGIN 
+                BEGIN
+                    ALTER TABLE quant_signals ADD COLUMN {col} {col_type};
+                EXCEPTION
+                    WHEN duplicate_column THEN RAISE NOTICE 'column {col} already exists';
+                END;
+            END $$;
+        """)
     conn.commit()
 
     print(f"🚀 Starting Scan at {datetime.now()}")
