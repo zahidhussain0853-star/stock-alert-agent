@@ -113,4 +113,79 @@ def run_scanner():
 
     for symbol in TICKERS:
         try:
-            stock
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            # 1. Price & Volume
+            price = info.get('currentPrice', 0)
+            avg_vol = info.get('averageVolume', 1)
+            curr_vol = info.get('regularMarketVolume', 0)
+            vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
+            
+            # --- 2. ANALYST MEMORY LOGIC ---
+            raw_curr = info.get('recommendationMean')
+            num_analysts = info.get('numberOfAnalystOpinions', 0)
+            
+            if raw_curr is not None:
+                curr_rating = float(raw_curr)
+            else:
+                curr_rating = 3.0
+                print(f"⚠️ {symbol}: No rating found, defaulting to 3.0")
+            
+            # FETCH PREVIOUS RATING
+            cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1", (symbol,))
+            prev_row = cur.fetchone()
+            
+            if prev_row and prev_row[0] is not None:
+                prev_rating = float(prev_row[0])
+            else:
+                prev_rating = curr_rating  
+            
+            transition_bonus = 30 if curr_rating < prev_rating else 0
+            transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
+
+            # 3. Sentiment & RS
+            sentiment = get_sentiment(symbol)
+            rs_status = get_relative_strength(symbol)
+            
+            # 4. Squeeze & Insider
+            short_pct = info.get('shortPercentOfFloat', 0) * 100
+            
+            insider_data = stock.insider_transactions
+            insider_buy = False
+            if insider_data is not None and not insider_data.empty:
+                insider_buy = any("Purchase" in str(x) for x in insider_data['Transaction'].head(5))
+
+            # --- SCORING ALGORITHM ---
+            score = 0
+            score += transition_bonus
+            if sentiment > 0.1: score += 20
+            if vol_delta > 1.5: score += 10
+            if rs_status == "Leader": score += 20
+            if insider_buy: score += 10
+            if short_pct > 10: score += 10
+            
+            label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
+
+            # 5. Save to DB (Now includes prev_raw_rating)
+            cur.execute("""
+                INSERT INTO quant_signals 
+                (symbol, price, final_score, signal_label, analyst_transition, 
+                 news_sentiment, volume_delta, insider_buying, short_float_pct, 
+                 rs_status, num_analysts, raw_rating, prev_raw_rating)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (symbol, price, score, label, transition_text, sentiment, 
+                  vol_delta, insider_buy, short_pct, rs_status, num_analysts, curr_rating, prev_rating))
+            
+            conn.commit()
+            print(f"✅ {symbol} processed | Score: {score}")
+
+        except Exception as e:
+            print(f"❌ Error scanning {symbol}: {e}")
+
+    cur.close()
+    conn.close()
+    print("🏁 Scan Complete.")
+
+if __name__ == "__main__":
+    run_scanner()
