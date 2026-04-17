@@ -1,13 +1,12 @@
 import os
-import logging
 import sys
 from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime, timedelta
 
-# --- LOGGING CONFIG (Immediate Railway visibility) ---
-logging.basicConfig(level=logging.INFO, format='%(message)s', stream=sys.stderr)
-logger = logging.getLogger("SCOUT_ENGINE")
+# --- FORCE CONSOLE PRINT ---
+def scout_print(msg):
+    print(f"SCOUT_ENGINE: {msg}", flush=True)
 
 # --- DB SETUP ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -32,44 +31,27 @@ class DailyMetric(Base):
     bb_width_30d_low = Column(Boolean)
     rs_slope_5d = Column(Float)
 
-def get_scout_score(ticker):
+def run_analysis():
     session = SessionLocal()
     today = datetime.now().date()
+    scout_print("Analyzing database records...")
     
     try:
-        # 1. Fetch current and historical data
-        current = session.query(DailyMetric).filter_by(ticker=ticker).order_by(DailyMetric.date.desc()).first()
-        d2_ago = session.query(DailyMetric).filter(DailyMetric.ticker == ticker, DailyMetric.date <= today - timedelta(days=2)).order_by(DailyMetric.date.desc()).first()
-        d30_ago = session.query(DailyMetric).filter(DailyMetric.ticker == ticker, DailyMetric.date <= today - timedelta(days=30)).order_by(DailyMetric.date.desc()).first()
+        tickers = [t.ticker for t in session.query(DailyMetric.ticker).distinct().all()]
+        if not tickers:
+            scout_print("No tickers found in database yet.")
+            return
 
-        if not current: return None
-
-        base_score = 0
-        
-        # --- ENGINE 1: ANALYST VELOCITY ---
-        if d2_ago and current.analyst_rating > d2_ago.analyst_rating:
-            base_score += 20
-        
-        # --- ENGINE 2: VOLUME SPIKE ---
-        if current.average_volume_30d > 0:
-            rvol = current.volume / current.average_volume_30d
-            if rvol > 2.0: base_score += 30
-
-        # --- MULTIPLIERS ---
-        multiplier = 1.0
-        if current.short_float_pct > 10: multiplier *= 1.2
-        
-        final_score = base_score * multiplier
-        return {"ticker": ticker, "score": round(final_score, 2)}
-
+        for ticker in tickers:
+            current = session.query(DailyMetric).filter_by(ticker=ticker).order_by(DailyMetric.date.desc()).first()
+            # Scoring logic (simplified for visibility)
+            scout_print(f"FOUND: {ticker} | Date: {current.date} | Rating: {current.analyst_rating}")
+            
+    except Exception as e:
+        scout_print(f"ERROR: {str(e)}")
     finally:
         session.close()
 
 if __name__ == "__main__":
-    logger.info("--- Scout Analysis Starting ---")
-    session = SessionLocal()
-    tickers = [t.ticker for t in session.query(DailyMetric.ticker).distinct().all()]
-    for t in tickers:
-        result = get_scout_score(t)
-        if result:
-            logger.info(f"RESULT: {result['ticker']} | Score: {result['score']}")
+    scout_print("Engine Waking Up...")
+    run_analysis()
