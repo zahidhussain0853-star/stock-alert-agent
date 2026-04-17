@@ -1,98 +1,76 @@
 import os
 import requests
-import logging
 import sys
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-# Import the model from your main.py
-from main import DailyMetric 
+from main import DailyMetric  # Ensure this matches your main.py filename
 
-# --- CONFIGURATION & LOGGING ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    stream=sys.stdout
-)
-logger = logging.getLogger("INGEST")
+# 1. Force immediate output to Railway logs
+def log_debug(msg):
+    print(f"DEBUG_INGEST: {msg}", flush=True)
 
-# Railway Environment Variables
+# 2. Database Setup
 DATABASE_URL = os.getenv("DATABASE_URL")
-API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
-
-# SQLAlchemy Fix for Railway/Postgres
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+
 def fetch_and_save(ticker):
-    if not DATABASE_URL or not API_KEY:
-        logger.error("MISSING CONFIG: Ensure DATABASE_URL and ALPHA_VANTAGE_KEY are in Railway Variables.")
+    log_debug(f"Starting fetch for {ticker}...")
+    
+    if not API_KEY:
+        log_debug("FAILED: ALPHA_VANTAGE_KEY is missing from Variables!")
         return
 
-    engine = create_engine(DATABASE_URL)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-
-    logger.info(f"🚀 Starting ingestion for: {ticker}")
-
     try:
-        # 1. Fetch Fundamental Overview (Analyst Ratings & Avg Volume)
-        ov_url = f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEY}'
-        ov_res = requests.get(ov_url).json()
+        engine = create_engine(DATABASE_URL)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        
+        # --- API FETCH ---
+        log_debug(f"Calling Alpha Vantage for {ticker}...")
+        url = f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEY}'
+        response = requests.get(url)
+        data = response.json()
 
-        # Check for API Limit/Error
-        if "Symbol" not in ov_res:
-            info = ov_res.get("Information") or ov_res.get("Note") or "Unknown Error"
-            logger.error(f"❌ API Rejected {ticker}: {info}")
+        # Check for the dreaded "Rate Limit" message
+        if "Symbol" not in data:
+            log_debug(f"API ERROR for {ticker}: {data}")
             return
 
-        # 2. Fetch Real-time Quote (Current Volume)
-        q_url = f'https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={API_KEY}'
-        q_res = requests.get(q_url).json()
-        quote = q_res.get("Global Quote", {})
+        log_debug(f"API SUCCESS: Found {ticker}. Mapping to DB...")
 
-        if not quote:
-            logger.error(f"⚠️ Quote data missing for {ticker}. Check API limits.")
-            return
-
-        # 3. Build the Entry (Mapping to your specific DB columns)
-        # Note: Using 'real' equivalents for decimals
+        # --- DATA MAPPING ---
+        # Note: Using your exact column 'average_volume_30d'
         new_entry = DailyMetric(
             ticker=ticker,
             date=datetime.now().date(),
-            analyst_rating=float(ov_res.get('AnalystRatingStrongBuy', 0)) + float(ov_res.get('AnalystRatingBuy', 0)),
-            sentiment_score=0.0, # Placeholder for expansion
-            volume=int(quote.get('06. volume', 0)),
-            average_volume_30d=int(ov_res.get('AverageVolume', 0)) if ov_res.get('AverageVolume') else 0,
+            analyst_rating=float(data.get('AnalystRatingStrongBuy', 0)) + float(data.get('AnalystRatingBuy', 0)),
+            sentiment_score=0.0,
+            volume=1000000, # Placeholder for test if Quote API fails
+            average_volume_30d=int(data.get('AverageVolume', 0)) if data.get('AverageVolume') else 0,
             call_put_ratio=1.0,
-            short_float_pct=float(ov_res.get('PercentVisible', 0)) if ov_res.get('PercentVisible') else 0,
+            short_float_pct=0.0,
             bb_width_30d_low=False,
             rs_slope_5d=0.0
         )
 
-        # 4. UPSERT Logic (Update if ticker/date combo exists, else Insert)
-        existing = session.query(DailyMetric).filter_by(ticker=ticker, date=new_entry.date).first()
+        # --- THE COMMIT ---
+        log_debug(f"Attempting to commit {ticker} to DB...")
         
-        if existing:
-            logger.info(f"🔄 Updating existing record for {ticker} on {new_entry.date}")
-            for column in DailyMetric.__table__.columns:
-                if column.name != 'id':
-                    setattr(existing, column.name, getattr(new_entry, column.name))
-        else:
-            logger.info(f"📥 Inserting new record for {ticker}")
-            session.add(new_entry)
-
+        # Simple Add for debug (ignoring upsert for a second to ensure it works)
+        session.add(new_entry)
         session.commit()
-        logger.info(f"✅ SUCCESS: Data committed for {ticker}")
-
-    except Exception as e:
-        session.rollback()
-        logger.error(f"💥 CRITICAL ERROR: {str(e)}")
-    finally:
+        
+        log_debug(f"DATABASE SUCCESS: {ticker} is now in the table.")
         session.close()
 
+    except Exception as e:
+        log_debug(f"CRITICAL EXCEPTION: {str(e)}")
+
 if __name__ == "__main__":
-    # Add the tickers you want the Scout to monitor here
-    watchlist = ["NVDA", "AAPL", "TSLA"]
-    for symbol in watchlist:
-        fetch_and_save(symbol)
+    log_debug("Script Wake Up.")
+    # Test with just one ticker to save API calls
+    fetch_and_save("NVDA")
