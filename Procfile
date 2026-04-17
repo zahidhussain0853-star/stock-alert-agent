@@ -1,1 +1,1 @@
-worker: python ingest.py && python main.py
+worker: python -u ingest.py && python -u main.py
