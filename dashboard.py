@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
+from sqlalchemy import create_engine
 import os
 from dotenv import load_dotenv
 
@@ -17,8 +17,13 @@ load_dotenv()
 @st.cache_data(ttl=30)
 def get_data():
     try:
-        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-        # Updated Query to include new Fundamental Pillars
+        db_url = os.getenv("DATABASE_URL")
+        # Ensure compatibility with SQLAlchemy
+        if db_url and db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        
+        engine = create_engine(db_url)
+        
         query = """
         SELECT DISTINCT ON (symbol) 
             symbol, price, final_score, signal_label, 
@@ -30,8 +35,8 @@ def get_data():
         FROM quant_signals
         ORDER BY symbol, timestamp DESC;
         """
-        df = pd.read_sql(query, conn)
-        conn.close()
+        with engine.connect() as conn:
+            df = pd.read_sql(query, conn)
         return df
     except Exception as e:
         st.error(f"Database connection error: {e}")
@@ -50,6 +55,9 @@ def translate_rating(val):
     except: return "Neutral"
 
 def format_detailed_rating(row):
+    """
+    Format: Prev Label → Now Label (Count, Curr Avg, Prev Avg → Now Avg)
+    """
     try:
         now_score = row.get('raw_rating')
         prev_score = row.get('prev_raw_rating')
@@ -80,29 +88,41 @@ def main():
 
     st.markdown("---")
     
-    # 2. Updated Legend with Weighting and Fundamentals
+    # 2. Legend
     st.info("""
-    **Legend & Weighting:** * **Momentum:** RS Leader (+20) | Sentiment > 0.1 (+20) | Vol Shift > 1.5x (+10)
+    **Alpha Scoring Logic:**
+    * **Momentum:** RS Leader (+20) | Sentiment > 0.1 (+20) | Vol Shift > 1.5x (+10)
     * **Analyst:** Base Score ((5-Rating)*10) | Upgrade (+20)
-    * **Fundamentals (Tech/Retail):** Op. Margin > 25% (+10) | Debt/Equity < 100 (+5)
-    * **Fundamentals (Finance):** ROE > 15% (+15)
-    * **Speculative:** Short % > 10 (+10) | Insider Purchase (+10)
+    * **Fundamentals:** Tech/Retail: Op. Margin > 25% (+10) & Debt/Equity < 100 (+5) | Finance: ROE > 15% (+15)
+    * **Speculative:** Short Float > 10% (+10) | High Insider Holding > 5% (+10)
     """)
 
     # 3. Data Processing
     display_df = df.copy()
+    
+    # Fix: Multiply by 100 for proper percentage display
+    display_df['operating_margin'] = display_df['operating_margin'] * 100
+    display_df['return_on_equity'] = display_df['return_on_equity'] * 100
+    
     display_df['Rating Details'] = display_df.apply(format_detailed_rating, axis=1)
-    display_df['Insider'] = display_df['insider_buying'].apply(lambda x: '🟢 Buy' if x else '⚪ None')
+    display_df['Insider'] = display_df['insider_buying'].apply(lambda x: '🟢 High' if x else '⚪ Standard')
     display_df['Trend'] = display_df['rs_status'].apply(lambda x: '🚀 Leader' if x == 'Leader' else '📉 Lag')
     display_df['Signal'] = display_df['final_score'].apply(
         lambda x: '💎 Crystal' if x >= 70 else '✅ Conviction' if x >= 45 else 'ℹ️ Neutral'
     )
 
     # 4. Styling Logic
-    def style_score(v):
-        if v >= 70: return 'background-color: #004d1a; color: white; font-weight: bold' 
-        if v >= 45: return 'background-color: #28a745; color: white' 
-        return ''
+    def style_rows(row):
+        styles = [''] * len(row)
+        if row['Score'] >= 70:
+            styles[row.index.get_loc('Score')] = 'background-color: #004d1a; color: white; font-weight: bold'
+        elif row['Score'] >= 45:
+            styles[row.index.get_loc('Score')] = 'background-color: #28a745; color: white'
+        
+        if row['Short %'] > 10:
+            styles[row.index.get_loc('Short %')] = 'color: #ff4b4b; font-weight: bold'
+            
+        return styles
 
     final_df = display_df.rename(columns={
         'symbol': 'Ticker', 'price': 'Price', 'final_score': 'Score', 
@@ -110,13 +130,16 @@ def main():
         'operating_margin': 'Op Margin', 'return_on_equity': 'ROE', 'sector': 'Sector'
     })
 
-    # Updated columns to include Fundamentals in the view
-    cols = ['Ticker', 'Sector', 'Price', 'Score', 'Signal', 'Rating Details', 'News', 'Vol Shift', 'Op Margin', 'ROE', 'Trend']
+    # Ensure all required columns are in the list
+    cols = [
+        'Ticker', 'Sector', 'Price', 'Score', 'Signal', 'Trend', 
+        'Short %', 'Insider', 'News', 'Vol Shift', 'Op Margin', 'ROE', 'Rating Details'
+    ]
 
     # 5. Final Render
     st.dataframe(
-        final_df[cols].style.map(style_score, subset=['Score']),
-        use_container_width=True,
+        final_df[cols].style.apply(style_rows, axis=1),
+        width="stretch", 
         hide_index=True,
         height=600,
         column_config={
@@ -124,10 +147,12 @@ def main():
             "Score": st.column_config.NumberColumn(format="%d"),
             "News": st.column_config.NumberColumn(format="%.2f"),
             "Vol Shift": st.column_config.NumberColumn(format="%.2fx"),
-            "Op Margin": st.column_config.NumberColumn(format="%.2%"),
-            "ROE": st.column_config.NumberColumn(format="%.2%"),
+            "Short %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Op Margin": st.column_config.NumberColumn(format="%.1f%%"),
+            "ROE": st.column_config.NumberColumn(format="%.1f%%"),
             "Rating Details": st.column_config.TextColumn(width="large"),
-            "Sector": st.column_config.TextColumn(width="medium")
+            "Sector": st.column_config.TextColumn(width="medium"),
+            "Insider": st.column_config.TextColumn(width="small")
         }
     )
 

@@ -1,197 +1,83 @@
-import yfinance as yf
-import pandas as pd
-import psycopg2
-import time
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
-import feedparser
-from datetime import datetime
-from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean, Numeric
+from sqlalchemy.orm import sessionmaker, declarative_base
+from datetime import datetime, timedelta
 
-load_dotenv()
+# Database Connection
+DATABASE_URL = os.getenv("DATABASE_URL") # Railway provides this automatically
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
 
-# --- CONFIGURATION ---
-TICKERS = ['AAPL', 'MSFT', 'NVDA', 'AVGO', 'GOOGL', 'AMZN', 'META', 'BRK-B', 'LLY', 'V', 
-           'TSLA', 'WMT', 'JPM', 'UNH', 'MA', 'ORCL', 'COST', 'XOM', 'HD', 'PG', 
-           'NFLX', 'JNJ', 'BAC', 'ABBV', 'SAP', 'CRM', 'WFC', 'KO', 'DIS', 'ADBE', 
-           'CSCO', 'TMUS', 'MRK', 'TMO', 'ACN', 'AMD', 'PFE', 'LIN', 'PEP', 'ABT', 
-           'MCD', 'INTC', 'HON', 'NKE', 'CAT', 'TXN', 'QCOM', 'SBUX', 'LOW']
+class DailyMetric(Base):
+    __tablename__ = "daily_metrics"
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String)
+    date = Column(Date)
+    analyst_rating = Column(Float)  # Maps to 'real'
+    sentiment_score = Column(Float)
+    volume = Column(Integer)        # Maps to 'bigint'
+    avg_volume_30d = Column(Integer)
+    call_put_ratio = Column(Float)
+    short_float_pct = Column(Float)
+    bb_width_30d_low = Column(Boolean)
+    rs_slope_5d = Column(Float)
 
-def get_db_connection():
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
-
-def get_sentiment(ticker):
-    analyzer = SentimentIntensityAnalyzer()
-    titles = []
-    try:
-        time.sleep(1.0) 
-        stock = yf.Ticker(ticker)
-        yf_news = stock.news
-        if yf_news:
-            for n in yf_news[:5]:
-                t = n.get('title') or n.get('headline')
-                if t: titles.append(t)
-    except:
-        pass
-
-    if len(titles) < 3:
-        try:
-            rss_url = f"https://news.google.com/rss/search?q={ticker}+stock+when:1d&hl=en-US&gl=US&ceid=US:en"
-            feed = feedparser.parse(rss_url)
-            for entry in feed.entries[:5]:
-                if entry.title not in titles:
-                    titles.append(entry.title)
-        except:
-            pass
-
-    if not titles: return 0.0
-    scores = [analyzer.polarity_scores(t)['compound'] for t in titles]
-    return round(sum(scores) / len(scores), 2)
-
-def get_relative_strength(ticker):
-    try:
-        data = yf.download([ticker, 'SPY'], period='1mo', progress=False)['Close']
-        returns = data.pct_change().iloc[-1]
-        return "Leader" if returns[ticker] > returns['SPY'] else "Lag"
-    except:
-        return "Lag"
-
-def run_scanner():
-    conn = get_db_connection()
-    cur = conn.cursor()
+def get_scout_score(ticker):
+    session = SessionLocal()
+    today = datetime.now().date()
     
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS quant_signals (
-            symbol TEXT PRIMARY KEY,
-            price FLOAT,
-            final_score FLOAT,
-            signal_label TEXT,
-            analyst_transition TEXT,
-            news_sentiment FLOAT,
-            volume_delta FLOAT,
-            insider_buying BOOLEAN,
-            short_float_pct FLOAT,
-            rs_status TEXT,
-            num_analysts INT,
-            raw_rating FLOAT,
-            prev_raw_rating FLOAT,
-            free_cash_flow BIGINT,
-            operating_margin FLOAT,
-            debt_to_equity FLOAT,
-            sector TEXT,
-            return_on_equity FLOAT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
+    # 1. Fetch current and historical data
+    current = session.query(DailyMetric).filter_by(ticker=ticker).order_by(DailyMetric.date.desc()).first()
+    d2_ago = session.query(DailyMetric).filter(DailyMetric.ticker == ticker, DailyMetric.date <= today - timedelta(days=2)).order_by(DailyMetric.date.desc()).first()
+    d30_ago = session.query(DailyMetric).filter(DailyMetric.ticker == ticker, DailyMetric.date <= today - timedelta(days=30)).order_by(DailyMetric.date.desc()).first()
 
-    print(f"🚀 Starting Sector-Adaptive Scan at {datetime.now()}")
+    if not current:
+        return "No data found for ticker."
 
-    for symbol in TICKERS:
-        try:
-            stock = yf.Ticker(symbol)
-            info = stock.info
+    base_score = 0
+    
+    # --- ENGINE 1: ANALYST DECIMAL VELOCITY (40 pts) ---
+    if d30_ago:
+        # Move toward 1.0 (Buy) is positive delta
+        total_delta = d30_ago.analyst_rating - current.analyst_rating
+        if total_delta >= 0.3: base_score += 10
+        
+        if d2_ago:
+            recent_snap = d2_ago.analyst_rating - current.analyst_rating
+            if recent_snap >= 0.1: base_score += 10
             
-            # 1. Core Data
-            price = info.get('currentPrice', 0)
-            avg_vol = info.get('averageVolume', 1)
-            curr_vol = info.get('regularMarketVolume', 0)
-            vol_delta = curr_vol / avg_vol if avg_vol > 0 else 1
-            sector = info.get('sector', 'Unknown')
-            
-            # 2. Fundamentals
-            fcf = info.get('freeCashflow', 0)
-            op_margin = info.get('operatingMargins', 0)
-            debt_equity = info.get('debtToEquity', 0)
-            roe = info.get('returnOnEquity', 0)
-            
-            # 3. Speculative Data (The missing links)
-            short_raw = info.get('shortPercentOfFloat', 0)
-            short_float_pct = (short_raw * 100) if short_raw is not None else 0
-            
-            insider_raw = info.get('heldPercentInsiders', 0)
-            insider_val = (insider_raw * 100) if insider_raw is not None else 0
-            # Logic: If insiders own > 5% or have significant skin, mark as True
-            insider_buying = True if insider_val > 5.0 else False
+            # The Threshold Cross (e.g., 3.1 to 2.9)
+            if d2_ago.analyst_rating > 3.0 and current.analyst_rating <= 3.0:
+                base_score += 20
 
-            # 4. Analyst Logic
-            raw_curr = info.get('recommendationMean')
-            num_analysts = info.get('numberOfAnalystOpinions', 0)
-            curr_rating = float(raw_curr) if raw_curr is not None else 3.0
-            
-            cur.execute("SELECT raw_rating FROM quant_signals WHERE symbol = %s", (symbol,))
-            prev_row = cur.fetchone()
-            prev_rating = float(prev_row[0]) if prev_row and prev_row[0] is not None else curr_rating 
+    # --- ENGINE 2: SENTIMENT ARC (20 pts) ---
+    if d2_ago:
+        if d2_ago.sentiment_score < 0 and current.sentiment_score >= 0:
+            base_score += 10 # Vibe Shift
+        if (current.sentiment_score - d2_ago.sentiment_score) >= 0.2:
+            base_score += 10 # Acceleration
 
-            # --- SECTOR-SPECIFIC SCORING ALGORITHM ---
-            base_score = (5.0 - curr_rating) * 10 
-            score = base_score
-            
-            # Momentum & Sentiment
-            if curr_rating < prev_rating: score += 20 
-            sentiment = get_sentiment(symbol)
-            if sentiment > 0.1: score += 20
-            if vol_delta > 1.5: score += 10
-            rs_status = get_relative_strength(symbol)
-            if rs_status == "Leader": score += 20
-            
-            # Speculative Boosts
-            if short_float_pct > 10: score += 10 # Short Squeeze potential
-            if insider_buying: score += 10 # Strong internal conviction
-            
-            # FUNDAMENTAL PILLAR ADJUSTMENT
-            if sector == "Financial Services":
-                if roe > 0.15: score += 15
-            else:
-                if op_margin > 0.25: score += 10
-                if 0 < debt_equity < 100: score += 5
-            
-            # 5. Final Processing
-            score = min(max(round(score, 0), 0), 100)
-            label = "💎 Crystal" if score >= 70 else "✅ Conviction" if score >= 45 else "ℹ️ Neutral"
-            transition_text = f"{prev_rating:.1f} → {curr_rating:.1f}"
+    # --- ENGINE 3: VOLUME/SUPPLY (40 pts) ---
+    rvol = current.volume / current.avg_volume_30d if current.avg_volume_30d else 0
+    if rvol >= 3.0: base_score += 30
+    if current.call_put_ratio >= 3.0: base_score += 10
 
-            # 6. UPSERT
-            cur.execute("""
-                INSERT INTO quant_signals 
-                (symbol, price, final_score, signal_label, analyst_transition, 
-                 news_sentiment, volume_delta, insider_buying, short_float_pct, 
-                 rs_status, num_analysts, raw_rating, prev_raw_rating, 
-                 free_cash_flow, operating_margin, debt_to_equity, sector, return_on_equity, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (symbol) DO UPDATE SET
-                    price = EXCLUDED.price,
-                    final_score = EXCLUDED.final_score,
-                    signal_label = EXCLUDED.signal_label,
-                    analyst_transition = EXCLUDED.analyst_transition,
-                    news_sentiment = EXCLUDED.news_sentiment,
-                    volume_delta = EXCLUDED.volume_delta,
-                    insider_buying = EXCLUDED.insider_buying,
-                    short_float_pct = EXCLUDED.short_float_pct,
-                    rs_status = EXCLUDED.rs_status,
-                    num_analysts = EXCLUDED.num_analysts,
-                    raw_rating = EXCLUDED.raw_rating,
-                    prev_raw_rating = EXCLUDED.prev_raw_rating,
-                    free_cash_flow = EXCLUDED.free_cash_flow,
-                    operating_margin = EXCLUDED.operating_margin,
-                    debt_to_equity = EXCLUDED.debt_to_equity,
-                    sector = EXCLUDED.sector,
-                    return_on_equity = EXCLUDED.return_on_equity,
-                    timestamp = CURRENT_TIMESTAMP;
-            """, (symbol, price, score, label, transition_text, sentiment, 
-                  vol_delta, insider_buying, short_float_pct, rs_status, num_analysts, 
-                  curr_rating, prev_rating, fcf, op_margin, debt_equity, sector, roe))
-            
-            conn.commit()
-            print(f"✅ {symbol} ({sector}) | Score: {score} | Short: {short_float_pct:.1f}% | Insider: {insider_buying}")
+    # --- MULTIPLIERS ---
+    multiplier = 1.0
+    if current.short_float_pct > 10: multiplier *= 1.25
+    if current.bb_width_30d_low: multiplier *= 1.15
+    if current.rs_slope_5d > 0: multiplier *= 1.10
 
-        except Exception as e:
-            conn.rollback()
-            print(f"❌ Error scanning {symbol}: {e}")
+    final_score = base_score * multiplier
+    
+    return {
+        "ticker": ticker,
+        "base_score": base_score,
+        "multiplier": round(multiplier, 2),
+        "final_score": round(final_score, 2),
+        "status": "💎 CRYSTAL" if final_score >= 105 else "HIGH CONVICTION" if final_score >= 90 else "NEUTRAL"
+    }
 
-    cur.close()
-    conn.close()
-    print("🏁 Sector-Adaptive Scan Complete.")
-
-if __name__ == "__main__":
-    run_scanner()
+# Example usage
+# print(get_scout_score("NVDA"))
