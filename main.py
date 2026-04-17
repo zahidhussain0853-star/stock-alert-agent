@@ -2,7 +2,7 @@ import os
 import sys
 from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # --- DB SETUP ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -27,24 +27,17 @@ class DailyMetric(Base):
     bb_width_30d_low = Column(Boolean)
     rs_slope_5d = Column(Float)
 
-def run_analysis():
+if __name__ == "__main__":
+    print("--- SCOUT ENGINE STARTING ---")
     session = SessionLocal()
-    print("SCOUT: Starting analysis...")
-    
     try:
         tickers = [t.ticker for t in session.query(DailyMetric.ticker).distinct().all()]
-        print(f"SCOUT: Found {len(tickers)} tickers in database.")
-
+        print(f"Found {len(tickers)} tickers in database.")
         for ticker in tickers:
-            current = session.query(DailyMetric).filter_by(ticker=ticker).order_by(DailyMetric.date.desc()).first()
-            print(f"SCOUT REPORT: {ticker} | Date: {current.date} | Rating: {current.analyst_rating}")
-            
+            entry = session.query(DailyMetric).filter_by(ticker=ticker).order_by(DailyMetric.date.desc()).first()
+            print(f"DATA: {ticker} | Date: {entry.date} | Rating: {entry.analyst_rating}")
     except Exception as e:
-        print(f"SCOUT ERROR: {e}")
+        print(f"ERROR: {e}")
     finally:
         session.close()
-
-if __name__ == "__main__":
-    print("--- MAIN START ---")
-    run_analysis()
-    print("--- MAIN END ---")
+    print("--- SCOUT ENGINE FINISHED ---")
