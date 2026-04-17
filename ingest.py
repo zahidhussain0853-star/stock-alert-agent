@@ -6,7 +6,13 @@ from sqlalchemy.orm import sessionmaker
 # Import the DailyMetric class from your main.py
 from main import DailyMetric, SessionLocal 
 
-API_KEY = "YOUR_ALPHA_VANTAGE_KEY"
+# CORRECTED: Pull from the environment instead of hardcoding
+API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+
+if not API_KEY:
+    print("ERROR: ALPHA_VANTAGE_KEY not found in environment variables.")
+    # You can choose to exit here if the script can't function without it
+    # sys.exit(1)
 
 def fetch_and_save(ticker):
     session = SessionLocal()
