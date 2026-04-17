@@ -4,10 +4,6 @@ from sqlalchemy import create_engine, Column, Integer, String, Date, Float, Bool
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime, timedelta
 
-# --- FORCE CONSOLE PRINT ---
-def scout_print(msg):
-    print(f"SCOUT_ENGINE: {msg}", flush=True)
-
 # --- DB SETUP ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
@@ -33,25 +29,22 @@ class DailyMetric(Base):
 
 def run_analysis():
     session = SessionLocal()
-    today = datetime.now().date()
-    scout_print("Analyzing database records...")
+    print("SCOUT: Starting analysis...")
     
     try:
         tickers = [t.ticker for t in session.query(DailyMetric.ticker).distinct().all()]
-        if not tickers:
-            scout_print("No tickers found in database yet.")
-            return
+        print(f"SCOUT: Found {len(tickers)} tickers in database.")
 
         for ticker in tickers:
             current = session.query(DailyMetric).filter_by(ticker=ticker).order_by(DailyMetric.date.desc()).first()
-            # Scoring logic (simplified for visibility)
-            scout_print(f"FOUND: {ticker} | Date: {current.date} | Rating: {current.analyst_rating}")
+            print(f"SCOUT REPORT: {ticker} | Date: {current.date} | Rating: {current.analyst_rating}")
             
     except Exception as e:
-        scout_print(f"ERROR: {str(e)}")
+        print(f"SCOUT ERROR: {e}")
     finally:
         session.close()
 
 if __name__ == "__main__":
-    scout_print("Engine Waking Up...")
+    print("--- MAIN START ---")
     run_analysis()
+    print("--- MAIN END ---")
