@@ -1,1 +1,1 @@
-worker: python -u ingest.py && python -u main.py
+worker: python daily_stock_ratings_update.py

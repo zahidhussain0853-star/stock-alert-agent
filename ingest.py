@@ -1,58 +1,83 @@
+import yfinance as yf
 import os
-import requests
+import time
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from main import DailyMetric 
+from main import DailyMetric, Base, load_dotenv
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+load_dotenv()
 
-API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+DB_URL = os.getenv("DATABASE_URL").replace("postgres://", "postgresql://", 1)
+engine = create_engine(DB_URL)
+Session = sessionmaker(bind=engine)
 
-def fetch_and_save(ticker):
-    print(f"INGESTING: {ticker}...")
-    try:
-        engine = create_engine(DATABASE_URL)
-        Session = sessionmaker(bind=engine)
-        session = Session()
+def get_clean_sp500_list():
+    """
+    A cleaner way to get the S&P 500 without scraping raw HTML.
+    If the Wikipedia surgical strike failed, we use this hardcoded 
+    top-tier list or a smaller tech-heavy list to get you started.
+    """
+    # For a professional setup, we usually use a static CSV or 
+    # a dedicated financial data provider. 
+    # Let's use a robust list of the top 100 S&P components 
+    # to ensure the script doesn't choke on HTML.
+    top_100 = [
+        "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "GOOG", "META", "TSLA", "BRK-B", "UNH",
+        "JPM", "XOM", "LLY", "AVGO", "V", "PG", "MA", "COST", "HD", "CVX", "MRK", "ABBV",
+        "ADBE", "PEP", "KO", "ORCL", "TMO", "BAC", "CSCO", "CRM", "PFE", "ACN", "NFLX",
+        "LIN", "AMD", "ABT", "DHR", "INTC", "DIS", "TXN", "PM", "CAT", "VZ", "AMGN",
+        "INTU", "IBM", "UNP", "LOW", "COP", "GE", "AMAT", "HON", "BA", "RTX", "PLD",
+        "SPGI", "AXP", "T", "MS", "ELV", "GS", "SYK", "SBUX", "MDLZ", "BLK", "TJX",
+        "ISRG", "ADI", "LMT", "GILD", "MMC", "VRTX", "BKNG", "REGN", "ADP", "ETN",
+        "MDT", "C", "SLB", "CB", "MU", "CI", "ZTS", "BSX", "DE", "MO", "PANW",
+        "LRCX", "BMY", "ITW", "FI", "SNPS", "EOG", "CDNS", "CVS", "WM", "NOC", "SHW"
+    ]
+    return top_100
 
-        ov_data = requests.get(f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEY}').json()
-        q_data = requests.get(f'https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={API_KEY}').json().get("Global Quote", {})
+def ingest_scout_data():
+    tickers = get_clean_sp500_list() # No more messy HTML prints!
+    session = Session()
+    today = datetime.now().date()
+    
+    print(f"--- STARTING v5.0 INGEST: {len(tickers)} TICKERS ---")
 
-        if "Symbol" not in ov_data:
-            print(f"API ERROR for {ticker}: Check limits.")
-            return
+    for index, symbol in enumerate(tickers):
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            # The "Upsert" logic
+            target = session.query(DailyMetric).filter_by(ticker=symbol, date=today).first()
+            if not target:
+                target = DailyMetric(ticker=symbol, date=today)
+                session.add(target)
 
-        new_entry = DailyMetric(
-            ticker=ticker,
-            date=datetime.now().date(),
-            analyst_rating=float(ov_data.get('AnalystRatingStrongBuy', 0)) + float(ov_data.get('AnalystRatingBuy', 0)),
-            sentiment_score=0.0,
-            volume=int(q_data.get('06. volume', 0)) if q_data.get('06. volume') else 0,
-            average_volume_30d=int(ov_data.get('AverageVolume', 0)) if ov_res.get('AverageVolume') else 0,
-            call_put_ratio=1.0,
-            short_float_pct=0.0,
-            bb_width_30d_low=False,
-            rs_slope_5d=0.0
-        )
+            # Map v5.0 Data
+            target.analyst_rating = info.get('recommendationMean', 3.0)
+            target.volume = info.get('volume', 0)
+            target.average_volume_30d = info.get('averageVolume', 1)
+            target.short_float_pct = (info.get('shortPercentOfFloat', 0) or 0) * 100
+            
+            # Technical Stubs
+            target.sentiment_score = 0.1 
+            target.call_put_ratio = 1.0
+            target.bb_width_30d_low = False
+            target.rs_slope_5d = 0.1
 
-        existing = session.query(DailyMetric).filter_by(ticker=ticker, date=new_entry.date).first()
-        if existing:
-            for col in DailyMetric.__table__.columns:
-                if col.name != 'id': setattr(existing, col.name, getattr(new_entry, col.name))
-        else:
-            session.add(new_entry)
+            time.sleep(0.4) # Slight pause to be polite to Yahoo
 
-        session.commit()
-        print(f"SAVED: {ticker}")
-        session.close()
-    except Exception as e:
-        print(f"INGEST ERROR: {e}")
+            if index % 10 == 0 and index > 0:
+                session.commit()
+                print(f"Progress: {index}/{len(tickers)} processed...")
+
+        except Exception as e:
+            print(f"Skipping {symbol}: {e}")
+            continue
+
+    session.commit()
+    session.close()
+    print("--- INGEST COMPLETE ---")
 
 if __name__ == "__main__":
-    print("--- INGEST START ---")
-    for s in ["NVDA", "AAPL", "TSLA"]:
-        fetch_and_save(s)
-    print("--- INGEST END ---")
+    ingest_scout_data()
